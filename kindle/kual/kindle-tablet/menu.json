@@ -1,0 +1,22 @@
+{
+    "items": [
+        {
+            "name": "Start Tablet Mode",
+            "priority": 1,
+            "action": "/mnt/us/extensions/kindle-tablet/bin/start.sh",
+            "params": ""
+        },
+        {
+            "name": "Stop Tablet Mode",
+            "priority": 2,
+            "action": "/mnt/us/extensions/kindle-tablet/bin/stop.sh",
+            "params": ""
+        },
+        {
+            "name": "Status",
+            "priority": 3,
+            "action": "/mnt/us/extensions/kindle-tablet/bin/status.sh",
+            "params": ""
+        }
+    ]
+}

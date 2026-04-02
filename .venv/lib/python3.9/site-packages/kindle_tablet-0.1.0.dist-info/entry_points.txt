@@ -1,0 +1,2 @@
+[console_scripts]
+kindle-tablet = kindle_tablet.main:main

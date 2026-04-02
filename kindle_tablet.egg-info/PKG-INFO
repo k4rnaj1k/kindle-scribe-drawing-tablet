@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: kindle-tablet
+Version: 0.1.0
+Summary: Use your jailbroken Kindle Scribe as a drawing tablet
+Requires-Python: >=3.9
+Requires-Dist: paramiko>=3.4
+Requires-Dist: pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+Requires-Dist: pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+Provides-Extra: dev
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"

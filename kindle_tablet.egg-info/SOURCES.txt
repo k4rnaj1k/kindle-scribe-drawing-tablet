@@ -1,0 +1,15 @@
+pyproject.toml
+setup.py
+kindle_tablet/__init__.py
+kindle_tablet/config.py
+kindle_tablet/connector.py
+kindle_tablet/events.py
+kindle_tablet/input_macos.py
+kindle_tablet/input_windows.py
+kindle_tablet/main.py
+kindle_tablet.egg-info/PKG-INFO
+kindle_tablet.egg-info/SOURCES.txt
+kindle_tablet.egg-info/dependency_links.txt
+kindle_tablet.egg-info/entry_points.txt
+kindle_tablet.egg-info/requires.txt
+kindle_tablet.egg-info/top_level.txt

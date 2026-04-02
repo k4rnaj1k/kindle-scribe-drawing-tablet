@@ -1,0 +1,9 @@
+paramiko>=3.4
+
+[:sys_platform == "darwin"]
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-Cocoa>=10.0
+
+[dev]
+ruff
+mypy

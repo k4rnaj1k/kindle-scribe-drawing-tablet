@@ -1,0 +1,6 @@
+#!/Users/vladliasota/Projects/kindle-tools/kindle-tablet/.venv/bin/python3
+import sys
+from kindle_tablet.main import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())
