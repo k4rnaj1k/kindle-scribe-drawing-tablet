@@ -69,10 +69,6 @@ struct input_event {
 #define CTRL_ROTATION   0x01
 #define CTRL_DISCONNECT 0x02
 
-/* Button zone thresholds (percentage of touch range) */
-#define BUTTON_Y_START_PCT  85  /* buttons occupy bottom 15% */
-#define BUTTON_X_MID_PCT    50  /* left half = exit, right half = rotate */
-
 /* Maximum events in one frame (between SYN_REPORTs) */
 #define MAX_FRAME_EVENTS 64
 
@@ -99,16 +95,6 @@ struct touch_slot {
     int active;
 };
 
-/* Button tap state machine */
-#define ZONE_NONE   0
-#define ZONE_EXIT   1
-#define ZONE_ROTATE 2
-
-struct button_state {
-    int zone;           /* which zone the finger went down in */
-    int finger_down;    /* is finger currently down? */
-};
-
 struct daemon_state {
     int pen_fd;
     int touch_fd;
@@ -128,11 +114,6 @@ struct daemon_state {
     /* Touch tracking */
     struct touch_slot touch_slots[MAX_TOUCH_SLOTS];
     int current_slot;
-    int touch_finger_count;
-
-    /* Button tap detection */
-    struct button_state btn;
-
     /* Pen frame buffer (accumulate until SYN_REPORT) */
     struct input_event pen_frame[MAX_FRAME_EVENTS];
     int pen_frame_len;
@@ -145,8 +126,6 @@ struct daemon_state {
     int last_pen_x;
     int last_pen_y;
 
-    /* FBInk path */
-    char fbink_path[256];
 };
 
 /* ---- Signal handler ------------------------------------------------------ */
@@ -303,47 +282,6 @@ static void read_device_caps(struct daemon_state *st, const char *pen_path, cons
     }
 }
 
-/* ---- UI drawing ---------------------------------------------------------- */
-
-static void draw_ui(struct daemon_state *st)
-{
-    char cmd[512];
-    const char *orient = (st->rotation == ROTATION_LANDSCAPE) ? "LANDSCAPE" : "PORTRAIT";
-
-    /* Try FBInk first if the binary exists.
-     * Redirect stdout to /dev/null -- child processes must not write to our
-     * stdout which carries the binary event stream to the host. */
-    if (access(st->fbink_path, X_OK) == 0) {
-        snprintf(cmd, sizeof(cmd), "%s -c >/dev/null 2>&1", st->fbink_path);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "%s -pm -y 2 'KINDLE TABLET MODE' >/dev/null 2>&1", st->fbink_path);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "%s -pm -y 5 'Orientation: %s' >/dev/null 2>&1", st->fbink_path, orient);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "%s -pm -y 8 'Draw on your computer.' >/dev/null 2>&1", st->fbink_path);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "%s -pm -y 9 'Pen does NOT draw here.' >/dev/null 2>&1", st->fbink_path);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "%s -pm -y -4 '[ EXIT ]          [ ROTATE ]' >/dev/null 2>&1", st->fbink_path);
-        system(cmd);
-        return;
-    }
-
-    /* Fall back to eips -- always available on Kindle */
-    /* IMPORTANT: redirect stdout to /dev/null so eips doesn't corrupt the
-     * binary event stream that flows over our stdout to the host. */
-    system("eips -c >/dev/null 2>&1");
-    sleep(1); /* eips needs a moment after clear on e-ink */
-    system("eips 10 2 'KINDLE TABLET MODE' >/dev/null 2>&1");
-    snprintf(cmd, sizeof(cmd), "eips 5 5 'Orientation: %s' >/dev/null 2>&1", orient);
-    system(cmd);
-    system("eips 5 8 'Draw on your computer.' >/dev/null 2>&1");
-    system("eips 5 9 'Pen does NOT draw here.' >/dev/null 2>&1");
-    /* Buttons at bottom: eips col row -- ~row 34 on Scribe portrait */
-    system("eips 2 34 '[ EXIT ]' >/dev/null 2>&1");
-    system("eips 35 34 '[ ROTATE ]' >/dev/null 2>&1");
-}
-
 /* ---- Control messages ---------------------------------------------------- */
 
 static void send_control(uint16_t code, int32_t value)
@@ -354,45 +292,6 @@ static void send_control(uint16_t code, int32_t value)
     ev.code = code;
     ev.value = value;
     write(STDOUT_FILENO, &ev, sizeof(ev));
-}
-
-/* ---- Button zone detection ----------------------------------------------- */
-
-static int check_button_zone(struct daemon_state *st, int touch_x, int touch_y)
-{
-    int x_max = st->touch_x.max;
-    int y_max = st->touch_y.max;
-
-    if (x_max == 0 || y_max == 0)
-        return ZONE_NONE;
-
-    if (st->rotation == ROTATION_PORTRAIT) {
-        /* Buttons at bottom of screen in portrait */
-        int y_threshold = y_max * BUTTON_Y_START_PCT / 100;
-        int x_mid = x_max * BUTTON_X_MID_PCT / 100;
-
-        if (touch_y >= y_threshold) {
-            if (touch_x < x_mid)
-                return ZONE_EXIT;
-            else
-                return ZONE_ROTATE;
-        }
-    } else {
-        /* Landscape: device rotated 90deg CW. Native touch coords unchanged.
-         * Physical "bottom" in landscape = RIGHT edge in native portrait coords.
-         * Physical "left" in landscape = TOP in native portrait coords. */
-        int x_threshold = x_max * BUTTON_Y_START_PCT / 100;
-        int y_mid = y_max * BUTTON_X_MID_PCT / 100;
-
-        if (touch_x >= x_threshold) {
-            if (touch_y < y_mid)
-                return ZONE_EXIT;
-            else
-                return ZONE_ROTATE;
-        }
-    }
-
-    return ZONE_NONE;
 }
 
 /* ---- Rotation transform -------------------------------------------------- */
@@ -479,45 +378,6 @@ static void update_touch_state(struct daemon_state *st, struct input_event *ev)
     }
 }
 
-static int count_active_touches(struct daemon_state *st)
-{
-    int count = 0;
-    for (int i = 0; i < MAX_TOUCH_SLOTS; i++) {
-        if (st->touch_slots[i].active)
-            count++;
-    }
-    return count;
-}
-
-static int get_single_touch_slot(struct daemon_state *st)
-{
-    for (int i = 0; i < MAX_TOUCH_SLOTS; i++) {
-        if (st->touch_slots[i].active)
-            return i;
-    }
-    return -1;
-}
-
-static void handle_button_action(struct daemon_state *st, int zone)
-{
-    if (zone == ZONE_EXIT) {
-        fprintf(stderr, "Exit button tapped\n");
-        send_control(CTRL_DISCONNECT, 0);
-        /* Remove marker so tablet-mode.sh thaws the framework */
-        unlink("/tmp/tablet-mode-active");
-        g_running = 0;
-    } else if (zone == ZONE_ROTATE) {
-        fprintf(stderr, "Rotate button tapped\n");
-        if (st->rotation == ROTATION_PORTRAIT)
-            st->rotation = ROTATION_LANDSCAPE;
-        else
-            st->rotation = ROTATION_PORTRAIT;
-
-        send_control(CTRL_ROTATION, st->rotation);
-        draw_ui(st);
-    }
-}
-
 static void process_touch_event(struct daemon_state *st, struct input_event *ev)
 {
     /* Update internal touch tracking */
@@ -530,39 +390,7 @@ static void process_touch_event(struct daemon_state *st, struct input_event *ev)
         /* Add SYN to frame */
         st->touch_frame[st->touch_frame_len++] = *ev;
 
-        int active = count_active_touches(st);
-
-        if (active == 1 && !st->btn.finger_down) {
-            /* Single finger just went down -- check if it's in a button zone */
-            int slot_idx = get_single_touch_slot(st);
-            if (slot_idx >= 0) {
-                struct touch_slot *slot = &st->touch_slots[slot_idx];
-                int zone = check_button_zone(st, slot->x, slot->y);
-                if (zone != ZONE_NONE) {
-                    st->btn.zone = zone;
-                    st->btn.finger_down = 1;
-                    /* Consume this frame -- don't forward to host */
-                    st->touch_frame_len = 0;
-                    return;
-                }
-            }
-        }
-
-        if (st->btn.finger_down) {
-            /* We're in a button tap sequence */
-            if (active == 0) {
-                /* Finger lifted -- check if still in the same zone */
-                /* Use the last known position from the slot that was active */
-                handle_button_action(st, st->btn.zone);
-                st->btn.finger_down = 0;
-                st->btn.zone = ZONE_NONE;
-            }
-            /* Either way, consume the frame during button interaction */
-            st->touch_frame_len = 0;
-            return;
-        }
-
-        /* Not a button tap -- forward the frame to host */
+        /* Forward the frame to host */
         write(STDOUT_FILENO, st->touch_frame,
               st->touch_frame_len * sizeof(struct input_event));
 
@@ -580,7 +408,6 @@ static void usage(const char *prog)
         "Usage: %s [OPTIONS]\n"
         "  --pen-device PATH    Pen evdev device (default: auto-detect)\n"
         "  --touch-device PATH  Touch evdev device (default: auto-detect)\n"
-        "  --fbink PATH         FBInk binary path (default: /var/tmp/fbink)\n"
         "  --help               Show this help\n",
         prog);
 }
@@ -589,28 +416,23 @@ int main(int argc, char *argv[])
 {
     char pen_path[256] = "";
     char touch_path[256] = "";
-    char fbink_path[256] = "/var/tmp/fbink";
 
     /* Parse arguments */
     static struct option long_opts[] = {
         {"pen-device",   required_argument, NULL, 'p'},
         {"touch-device", required_argument, NULL, 't'},
-        {"fbink",        required_argument, NULL, 'f'},
         {"help",         no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "p:t:f:h", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "p:t:h", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'p':
             strncpy(pen_path, optarg, sizeof(pen_path) - 1);
             break;
         case 't':
             strncpy(touch_path, optarg, sizeof(touch_path) - 1);
-            break;
-        case 'f':
-            strncpy(fbink_path, optarg, sizeof(fbink_path) - 1);
             break;
         case 'h':
         default:
@@ -635,7 +457,6 @@ int main(int argc, char *argv[])
     /* Initialize state */
     struct daemon_state st;
     memset(&st, 0, sizeof(st));
-    strncpy(st.fbink_path, fbink_path, sizeof(st.fbink_path) - 1);
     st.rotation = ROTATION_PORTRAIT;
     st.pen_fd = -1;
     st.touch_fd = -1;
@@ -682,9 +503,6 @@ int main(int argc, char *argv[])
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGPIPE, SIG_IGN);
-
-    /* Draw initial UI */
-    draw_ui(&st);
 
     fprintf(stderr, "Tablet daemon running (rotation=%s)\n",
             st.rotation == ROTATION_LANDSCAPE ? "landscape" : "portrait");

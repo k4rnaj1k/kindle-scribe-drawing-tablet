@@ -1,0 +1,3 @@
+FROM kindle-sdk-final
+ENV MESON_CROSS=/home/builder/x-tools/arm-kindlehf-linux-gnueabihf/meson-crosscompile.txt
+ENV PATH="/home/builder/x-tools/arm-kindlehf-linux-gnueabihf/bin:${PATH}"

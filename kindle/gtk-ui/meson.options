@@ -1,0 +1,1 @@
+option('kindle_root_dir', type: 'string', value: '', description: 'Path to Kindle rootfs for cross-compilation linking')

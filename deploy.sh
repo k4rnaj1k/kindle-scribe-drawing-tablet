@@ -57,6 +57,16 @@ else
     echo "  Build it first:  make -C kindle"
 fi
 
+# Copy tablet-ui binary (GTK close button app)
+if [ -f "$KINDLE_DIR/bin/tablet-ui" ]; then
+    echo "Copying tablet-ui binary..."
+    scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-ui" \
+        "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
+else
+    echo "WARNING: tablet-ui binary not found!"
+    echo "  Build it first:  make -C kindle gtk-ui MESON_CROSS=<path>"
+fi
+
 # Make everything executable
 echo "Setting permissions..."
 ssh $SSH_OPTS "$SSH_USER@$KINDLE_IP" "

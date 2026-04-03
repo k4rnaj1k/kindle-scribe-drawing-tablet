@@ -1,31 +1,59 @@
-# Makefile for tablet-daemon (Kindle Scribe, ARMv7 32-bit)
+# Makefile for kindle-tablet Kindle-side binaries
 #
-# Default build uses Docker (works on macOS/Linux without cross-compiler):
-#   make
+# Build the Docker image (one-time, ~30min):
+#   make docker-image
 #
-# Native cross-compile (if you have arm-linux-gnueabihf-gcc installed):
+# Build everything:
+#   make all
+#
+# Build individually:
+#   make tablet-daemon
+#   make gtk-ui
+#
+# Native build (if you have koxtoolchain installed locally):
 #   make native
+#   make gtk-ui-native MESON_CROSS=<path-to-meson-crosscompile.txt>
 #
 # Clean:
 #   make clean
 
+DOCKER_IMAGE = kindle-sdk-final
+TARGET ?= kindlehf
 CFLAGS = -Wall -Wextra -Os -std=c99 -D_GNU_SOURCE
 LDFLAGS = -static
-TARGET = bin/tablet-daemon
-SRC = bin/tablet-daemon.c
+DAEMON_TARGET = bin/tablet-daemon
+DAEMON_SRC = bin/tablet-daemon.c
+UI_TARGET = bin/tablet-ui
+MESON_CROSS ?=
 
-.PHONY: all clean native
+.PHONY: all clean docker-image tablet-daemon gtk-ui native gtk-ui-native
 
-all: $(TARGET)
+all: tablet-daemon gtk-ui
 
-$(TARGET): $(SRC)
-	docker run --rm --platform linux/arm64 -v "$(CURDIR)":/src -w /src \
-		ubuntu:22.04 \
-		sh -c "apt-get update -q && apt-get install -y -q gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf && arm-linux-gnueabihf-gcc $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(SRC) && arm-linux-gnueabihf-strip $(TARGET)"
+docker-image:
+	docker build --build-arg TARGET=$(TARGET) -t $(DOCKER_IMAGE) .
 
-native: $(SRC)
-	arm-linux-gnueabihf-gcc $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(SRC)
-	arm-linux-gnueabihf-strip $(TARGET)
+tablet-daemon: $(DAEMON_SRC)
+	docker run --rm -v "$(CURDIR)":/src $(DOCKER_IMAGE) \
+		sh -c "cd /src && arm-$(TARGET)-linux-gnueabihf-gcc $(CFLAGS) $(LDFLAGS) -o $(DAEMON_TARGET) $(DAEMON_SRC) && arm-$(TARGET)-linux-gnueabihf-strip $(DAEMON_TARGET)"
+
+gtk-ui: gtk-ui/src/main.cpp gtk-ui/meson.build
+	docker run --rm -v "$(CURDIR)":/src $(DOCKER_IMAGE) \
+		sh -c "cd /src/gtk-ui && rm -rf builddir_kindle && meson setup --cross-file \$$MESON_CROSS builddir_kindle && meson compile -C builddir_kindle && cp builddir_kindle/tablet-ui /src/$(UI_TARGET)"
+
+native: $(DAEMON_SRC)
+	arm-linux-gnueabihf-gcc $(CFLAGS) $(LDFLAGS) -o $(DAEMON_TARGET) $(DAEMON_SRC)
+	arm-linux-gnueabihf-strip $(DAEMON_TARGET)
+
+gtk-ui-native: gtk-ui/src/main.cpp gtk-ui/meson.build
+	@if [ -z "$(MESON_CROSS)" ]; then \
+		echo "Error: MESON_CROSS not set. Usage: make gtk-ui-native MESON_CROSS=<path>"; \
+		exit 1; \
+	fi
+	cd gtk-ui && meson setup --cross-file $(MESON_CROSS) builddir_kindle 2>/dev/null || true
+	meson compile -C gtk-ui/builddir_kindle
+	cp gtk-ui/builddir_kindle/tablet-ui $(UI_TARGET)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(DAEMON_TARGET) $(UI_TARGET)
+	rm -rf gtk-ui/builddir_kindle gtk-ui/builddir
