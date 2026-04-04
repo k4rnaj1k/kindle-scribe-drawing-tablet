@@ -19,6 +19,9 @@ How to use:
 3. `source .venv/bin/activate`
 4. `kindle-tablet --host kindle-ip`
 
+## On windows:
+Requires [vmulti-bin](https://github.com/X9VoiD/vmulti-bin) to be installed(gotta check if possible without it).
+
 ## Building notes:
 ```
 make docker-image
