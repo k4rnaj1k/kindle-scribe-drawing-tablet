@@ -3,6 +3,12 @@
 # Build the Docker image (one-time, ~30min):
 #   make docker-image
 #
+# gen-sdk.sh needs loopback mounts, which Docker build doesn't allow.
+# docker-image works around this by:
+#   1. building only the toolchain stage
+#   2. running gen-sdk.sh in a --privileged container
+#   3. committing the result as kindle-sdk-final
+#
 # Build everything:
 #   make all
 #
@@ -31,7 +37,12 @@ MESON_CROSS ?=
 all: tablet-daemon gtk-ui
 
 docker-image:
-	docker build --build-arg TARGET=$(TARGET) -t $(DOCKER_IMAGE) .
+	docker build --target toolchain -t kindle-toolchain .
+	docker rm -f sdk-builder 2>/dev/null || true
+	docker run --privileged --name sdk-builder -u builder kindle-toolchain \
+		/bin/sh -c "cd ~/kindle-sdk && ./gen-sdk.sh $(TARGET)"
+	docker commit sdk-builder $(DOCKER_IMAGE)
+	docker rm sdk-builder
 
 tablet-daemon: $(DAEMON_SRC)
 	docker run --rm -v "$(CURDIR)":/src $(DOCKER_IMAGE) \
