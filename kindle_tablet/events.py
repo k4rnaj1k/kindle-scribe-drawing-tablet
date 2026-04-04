@@ -196,26 +196,26 @@ class EventParser:
         elif code == AbsCode.ABS_DISTANCE:
             self.pen.distance = value
             self.pen.dirty = True
-        # Multi-touch axes
-        elif code == AbsCode.ABS_MT_SLOT:
-            self.touch.current_slot = value
-        elif code == AbsCode.ABS_MT_TRACKING_ID:
-            slot = self.touch.get_slot(self.touch.current_slot)
-            slot.tracking_id = value
-            slot.active = value >= 0
-            self.touch.dirty = True
-        elif code == AbsCode.ABS_MT_POSITION_X:
-            slot = self.touch.get_slot(self.touch.current_slot)
-            slot.x = value
-            self.touch.dirty = True
-        elif code == AbsCode.ABS_MT_POSITION_Y:
-            slot = self.touch.get_slot(self.touch.current_slot)
-            slot.y = value
-            self.touch.dirty = True
-        elif code == AbsCode.ABS_MT_TOUCH_MAJOR:
-            slot = self.touch.get_slot(self.touch.current_slot)
-            slot.touch_major = value
-            self.touch.dirty = True
+        # # Multi-touch axes
+        # elif code == AbsCode.ABS_MT_SLOT:
+        #     self.touch.current_slot = value
+        # elif code == AbsCode.ABS_MT_TRACKING_ID:
+        #     slot = self.touch.get_slot(self.touch.current_slot)
+        #     slot.tracking_id = value
+        #     slot.active = value >= 0
+        #     self.touch.dirty = True
+        # elif code == AbsCode.ABS_MT_POSITION_X:
+        #     slot = self.touch.get_slot(self.touch.current_slot)
+        #     slot.x = value
+        #     self.touch.dirty = True
+        # elif code == AbsCode.ABS_MT_POSITION_Y:
+        #     slot = self.touch.get_slot(self.touch.current_slot)
+        #     slot.y = value
+        #     self.touch.dirty = True
+        # elif code == AbsCode.ABS_MT_TOUCH_MAJOR:
+        #     slot = self.touch.get_slot(self.touch.current_slot)
+        #     slot.touch_major = value
+        #     self.touch.dirty = True
 
     def _process_key(self, code: int, value: int) -> None:
         pressed = value != 0
