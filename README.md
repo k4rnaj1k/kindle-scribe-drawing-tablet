@@ -18,3 +18,11 @@ How to use:
 2. `./deploy.sh kindle-ip`
 3. `source .venv/bin/activate`
 4. `kindle-tablet --host kindle-ip`
+
+## Building notes:
+```
+make docker-image
+docker build --target toolchain -t kindle-toolchain .
+docker run --privileged --name sdk-builder -u builder kindle-toolchain /bin/sh -c "cd ~/kindle-sdk && ./gen-sdk.sh kindlehf"
+docker commit sdk-builder kindle-sdk-final
+```
