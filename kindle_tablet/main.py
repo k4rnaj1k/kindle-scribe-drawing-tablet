@@ -101,6 +101,7 @@ class TabletHandler:
         # Store original axis limits for rotation
         self._original_max_x = config.tablet.kindle_max_x
         self._original_max_y = config.tablet.kindle_max_y
+        self._rotation = 0  # 0 = portrait, 90 = landscape
         self._compute_mapping()
 
     def _compute_mapping(self) -> None:
@@ -146,7 +147,12 @@ class TabletHandler:
 
         Uses aspect-ratio-preserving mapping so pen movement is uniform
         in all directions (like a real drawing tablet).
+        Applies rotation transform when in landscape mode.
         """
+        if self._rotation == 90:
+            # 90° CW: new_x = y, new_y = max_x - x (same as old daemon transform)
+            kindle_x, kindle_y = kindle_y, self._original_max_x - kindle_x
+
         x = self._map_offset_x + kindle_x * self._map_scale_x
         y = self._map_offset_y + kindle_y * self._map_scale_y
         return x, y
@@ -220,11 +226,12 @@ class TabletHandler:
                 self.backend.move(x, y, pressure, tilt_x, tilt_y)
 
     def on_control(self, code: int, value: int) -> None:
-        """Handle a control message from tablet-daemon."""
+        """Handle a control message (rotation change from tablet-ui)."""
         if code == ControlCode.CTRL_ROTATION:
+            self._rotation = value
             tc = self.config.tablet
             if value == 90:
-                # Landscape: daemon swapped X/Y, so effective max swaps
+                # Landscape: swap effective dimensions for aspect ratio mapping
                 tc.kindle_max_x = self._original_max_y
                 tc.kindle_max_y = self._original_max_x
                 log.info("Rotation: landscape (effective %dx%d)",
@@ -424,6 +431,12 @@ def main() -> None:
 
     try:
         connector.start_streaming()
+
+        # Refresh handler's original axis limits now that device caps are read
+        handler._original_max_x = cfg.tablet.kindle_max_x
+        handler._original_max_y = cfg.tablet.kindle_max_y
+        handler._compute_mapping()
+
         print("\n  Kindle Tablet active!")
         print(f"  Mode: {cfg.mode} | Pen: {cfg.pen_device}")
         if cfg.touch_device:

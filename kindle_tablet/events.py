@@ -58,7 +58,7 @@ class SynCode(IntEnum):
     SYN_MT_REPORT = 0x02
 
 
-# Control messages from tablet-daemon (type=0xFF, never produced by kernel)
+# Control message type (type=0xFF, never produced by kernel)
 EV_CONTROL = 0xFF
 
 class ControlCode(IntEnum):
@@ -131,7 +131,7 @@ class EventParser:
         Returns a list of event names when a SYN_REPORT is received:
         - "pen" if pen state changed
         - "touch" if touch state changed
-        - ("control", code, value) for control messages from tablet-daemon
+        - ("control", code, value) for control messages
         """
         self._buffer.extend(data)
         results = []
@@ -153,7 +153,7 @@ class EventParser:
         return results
 
     def _process_event(self, ev_type: int, ev_code: int, ev_value: int) -> str | tuple | None:
-        # Control messages from tablet-daemon (type 0xFF)
+        # Control messages (type 0xFF)
         if ev_type == EV_CONTROL:
             return ("control", ev_code, ev_value)
 
