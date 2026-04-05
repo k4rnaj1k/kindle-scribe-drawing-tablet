@@ -8,5 +8,5 @@ executable('tablet-ui',
   'src/main.cpp',
   dependencies: [gtk2],
   cpp_args: '-static-libstdc++',
-  link_args: '-static-libstdc++',
+  link_args: ['-static-libstdc++', '-lpthread'],
   install: true)
