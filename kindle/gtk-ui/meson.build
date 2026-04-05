@@ -3,7 +3,10 @@ project('tablet-ui', 'cpp',
   default_options: ['cpp_std=c++17'])
 
 gtk2 = dependency('gtk+-2.0')
-xrandr = dependency('xrandr')
+cc   = meson.get_compiler('cpp')
+# libXrandr.so is already in the Kindle sysroot (part of the X11 stack).
+# Use find_library so we don't require a xrandr.pc file in the sysroot.
+xrandr = cc.find_library('Xrandr', required: true)
 
 executable('tablet-ui',
   'src/main.cpp',
