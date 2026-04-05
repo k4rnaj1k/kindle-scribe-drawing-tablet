@@ -71,9 +71,6 @@ do_stop() {
     # Kill UI if still running
     pkill -f "tablet-ui" 2>/dev/null
 
-    # Restore screen rotation to portrait
-    xrandr -o normal 2>/dev/null
-
     # Restore framework
     thaw_framework
 

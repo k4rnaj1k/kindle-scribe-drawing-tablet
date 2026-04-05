@@ -2,11 +2,10 @@
  * tablet-ui - Kindle Tablet Mode GTK UI
  *
  * Displays a fullscreen window with "Rotate" and "Exit Tablet Mode" buttons.
- * Rotate toggles between portrait/landscape: rotates the Kindle display
- * via xrandr and writes the rotation angle to /tmp/tablet-rotation so
- * the host can adjust coordinate mapping.
- * Exit removes the marker file and exits so
- * tablet-mode.sh can restore the framework.
+ * Rotate toggles the coordinate mapping between portrait/landscape by writing
+ * the rotation angle to /tmp/tablet-rotation for the host to read.
+ * Exit removes the marker file and exits so tablet-mode.sh can restore
+ * the framework.
  *
  * Build (native):  meson setup builddir && meson compile -C builddir
  * Build (Kindle):  meson setup --cross-file <path> builddir_kindlehf
@@ -25,11 +24,6 @@ static int g_rotation = 0; /* 0 = portrait, 90 = landscape */
 
 static void on_exit_clicked(GtkWidget *, gpointer)
 {
-    /* Restore portrait rotation before exiting */
-    if (g_rotation != 0) {
-        system("xrandr -o normal");
-    }
-
     /* Remove the marker file so tablet-mode.sh's wait loop exits */
     unlink(g_marker_file);
 
@@ -43,11 +37,9 @@ static void on_rotate_clicked(GtkWidget *, gpointer data)
 
     if (g_rotation == 0) {
         g_rotation = 90;
-        system("xrandr -o right");
         gtk_button_set_label(GTK_BUTTON(btn), "Rotate (Portrait)");
     } else {
         g_rotation = 0;
-        system("xrandr -o normal");
         gtk_button_set_label(GTK_BUTTON(btn), "Rotate (Landscape)");
     }
 
