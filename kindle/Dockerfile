@@ -9,7 +9,7 @@ RUN apt-get update -q && apt-get install -y -q \
     libtool libtool-bin libncurses-dev \
     curl file git gperf help2man texinfo unzip wget \
     libarchive-dev nettle-dev \
-    meson libgtk2.0-dev \
+    meson libgtk2.0-dev libxrandr-dev \
     pkg-config python3 sudo \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,5 +43,14 @@ WORKDIR /home/builder/kindle-sdk
 
 RUN chmod +x ./gen-sdk.sh \
     && ./gen-sdk.sh ${TARGET}
+
+# Copy XRandR headers from the host into the cross-compilation sysroot.
+# libXrandr.so is already present in the sysroot (part of the Kindle X11 stack);
+# only the architecture-neutral headers are missing.
+RUN SYSROOT="/home/builder/x-tools/arm-${TARGET}-linux-gnueabihf/arm-${TARGET}-linux-gnueabihf/sysroot" && \
+    sudo apt-get install -y -q libxrandr-dev 2>/dev/null || true && \
+    mkdir -p "$SYSROOT/usr/include/X11/extensions" && \
+    cp /usr/include/X11/extensions/Xrandr.h  "$SYSROOT/usr/include/X11/extensions/" && \
+    cp /usr/include/X11/extensions/randr.h   "$SYSROOT/usr/include/X11/extensions/"
 
 WORKDIR /src
