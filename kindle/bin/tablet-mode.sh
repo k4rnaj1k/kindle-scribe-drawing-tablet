@@ -66,10 +66,13 @@ start_tablet_mode() {
 
 do_stop() {
     rm -f "$MARKER"
+    rm -f /tmp/tablet-rotation
 
-    # Kill daemon and UI if still running
-    pkill -f "tablet-daemon" 2>/dev/null
+    # Kill UI if still running
     pkill -f "tablet-ui" 2>/dev/null
+
+    # Restore screen rotation to portrait
+    xrandr -o normal 2>/dev/null
 
     # Restore framework
     thaw_framework

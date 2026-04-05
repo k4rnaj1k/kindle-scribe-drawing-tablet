@@ -192,72 +192,34 @@ class KindleConnector:
         else:
             self._start_ssh_streaming()
 
-    def _has_tablet_daemon(self) -> bool:
-        """Check if tablet-daemon binary is deployed on the Kindle."""
-        if not self._ssh:
-            return False
-        try:
-            _, stdout, _ = self._ssh.exec_command(
-                "test -x /mnt/us/extensions/kindle-tablet/bin/tablet-daemon && echo ok"
-            )
-            return stdout.read().decode().strip() == "ok"
-        except Exception:
-            return False
-
     def _start_ssh_streaming(self) -> None:
-        """Stream events from the Kindle over SSH.
-
-        If tablet-daemon is available, runs it for a single unified stream
-        of pen + touch + control events. Otherwise falls back to raw cat.
-        """
+        """Stream events from the Kindle over SSH using raw cat."""
         pen_device = self.config.pen_device
         touch_device = self.config.touch_device
 
-        if self._has_tablet_daemon():
-            # Use tablet-daemon: single unified stream with pen, touch, and control
-            daemon_args = []
-            if pen_device:
-                daemon_args.append(f"--pen-device {pen_device}")
-            if touch_device and self.config.tablet.enable_touch:
-                daemon_args.append(f"--touch-device {touch_device}")
+        t = threading.Thread(target=self._ssh_read_loop, args=(pen_device, "pen"),
+                             daemon=True, name="pen-reader")
+        t.start()
+        self._threads.append(t)
 
-            cmd = "/mnt/us/extensions/kindle-tablet/bin/tablet-daemon " + " ".join(daemon_args)
-            log.info("Using tablet-daemon: %s", cmd)
+        if touch_device and self.config.tablet.enable_touch:
+            touch_parser = EventParser(arch_bits=32)
+            t2 = threading.Thread(target=self._ssh_read_loop,
+                                  args=(touch_device, "touch", touch_parser),
+                                  daemon=True, name="touch-reader")
+            t2.start()
+            self._threads.append(t2)
 
-            t = threading.Thread(target=self._ssh_read_loop,
-                                 args=(cmd, "daemon", None, True),
-                                 daemon=True, name="daemon-reader")
-            t.start()
-            self._threads.append(t)
-        else:
-            # Fallback: raw cat from /dev/input devices (no buttons, no rotation)
-            log.info("tablet-daemon not found, falling back to raw cat")
+        # Monitor rotation changes from tablet-ui
+        self._start_rotation_monitor()
 
-            t = threading.Thread(target=self._ssh_read_loop, args=(pen_device, "pen"),
-                                 daemon=True, name="pen-reader")
-            t.start()
-            self._threads.append(t)
-
-            if touch_device and self.config.tablet.enable_touch:
-                touch_parser = EventParser(arch_bits=32)
-                t2 = threading.Thread(target=self._ssh_read_loop,
-                                      args=(touch_device, "touch", touch_parser),
-                                      daemon=True, name="touch-reader")
-                t2.start()
-                self._threads.append(t2)
-
-    def _ssh_read_loop(self, device_or_cmd: str, device_type: str,
-                       parser: EventParser | None = None,
-                       is_command: bool = False) -> None:
-        """Read events from an SSH channel.
-
-        If is_command is True, runs device_or_cmd directly (e.g. tablet-daemon).
-        Otherwise runs 'cat <device_or_cmd>' to stream a raw evdev device.
-        """
+    def _ssh_read_loop(self, device: str, device_type: str,
+                       parser: EventParser | None = None) -> None:
+        """Read events from an SSH channel via cat on the evdev device."""
         if parser is None:
             parser = self.parser
 
-        cmd = device_or_cmd if is_command else f"cat {device_or_cmd}"
+        cmd = f"cat {device}"
         log.info("Starting SSH stream for %s: %s", device_type, cmd)
         transport = self._ssh.get_transport()
         channel = transport.open_session()
@@ -284,6 +246,47 @@ class KindleConnector:
         except Exception as e:
             if self._running:
                 log.error("Error reading %s: %s", device_type, e)
+        finally:
+            channel.close()
+
+    def _start_rotation_monitor(self) -> None:
+        """Monitor /tmp/tablet-rotation for changes written by tablet-ui."""
+        t = threading.Thread(target=self._rotation_monitor_loop,
+                             daemon=True, name="rotation-monitor")
+        t.start()
+        self._threads.append(t)
+
+    def _rotation_monitor_loop(self) -> None:
+        """Read rotation values from /tmp/tablet-rotation via SSH tail -f."""
+        cmd = "touch /tmp/tablet-rotation && tail -n0 -f /tmp/tablet-rotation"
+        log.info("Starting rotation monitor: %s", cmd)
+        transport = self._ssh.get_transport()
+        channel = transport.open_session()
+        channel.exec_command(cmd)
+
+        buf = b""
+        try:
+            while self._running:
+                data = channel.recv(256)
+                if not data:
+                    if not self._running:
+                        break
+                    log.warning("Rotation monitor channel closed")
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if line and self.on_control:
+                        try:
+                            angle = int(line)
+                            from .events import ControlCode
+                            self.on_control(ControlCode.CTRL_ROTATION, angle)
+                        except ValueError:
+                            pass
+        except Exception as e:
+            if self._running:
+                log.error("Rotation monitor error: %s", e)
         finally:
             channel.close()
 

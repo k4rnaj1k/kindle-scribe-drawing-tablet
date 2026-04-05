@@ -1,9 +1,12 @@
 /*
  * tablet-ui - Kindle Tablet Mode GTK UI
  *
- * Displays a fullscreen window with an "Exit Tablet Mode" button.
- * When tapped, kills tablet-daemon, removes the marker file,
- * and exits so tablet-mode.sh can restore the framework.
+ * Displays a fullscreen window with "Rotate" and "Exit Tablet Mode" buttons.
+ * Rotate toggles between portrait/landscape: rotates the Kindle display
+ * via xrandr and writes the rotation angle to /tmp/tablet-rotation so
+ * the host can adjust coordinate mapping.
+ * Exit removes the marker file and exits so
+ * tablet-mode.sh can restore the framework.
  *
  * Build (native):  meson setup builddir && meson compile -C builddir
  * Build (Kindle):  meson setup --cross-file <path> builddir_kindlehf
@@ -17,16 +20,40 @@
 #include <unistd.h>
 
 static const char *g_marker_file = "/tmp/tablet-mode-active";
+static const char *g_rotation_file = "/tmp/tablet-rotation";
+static int g_rotation = 0; /* 0 = portrait, 90 = landscape */
 
 static void on_exit_clicked(GtkWidget *, gpointer)
 {
-    /* Kill tablet-daemon so the SSH event stream closes */
-    system("pkill -f tablet-daemon");
+    /* Restore portrait rotation before exiting */
+    if (g_rotation != 0) {
+        system("xrandr -o normal");
+    }
 
     /* Remove the marker file so tablet-mode.sh's wait loop exits */
     unlink(g_marker_file);
 
     gtk_main_quit();
+}
+
+static void on_rotate_clicked(GtkWidget *, gpointer data)
+{
+    GtkWidget *btn = GTK_WIDGET(data);
+    char cmd[256];
+
+    if (g_rotation == 0) {
+        g_rotation = 90;
+        system("xrandr -o right");
+        gtk_button_set_label(GTK_BUTTON(btn), "Rotate (Portrait)");
+    } else {
+        g_rotation = 0;
+        system("xrandr -o normal");
+        gtk_button_set_label(GTK_BUTTON(btn), "Rotate (Landscape)");
+    }
+
+    /* Write rotation angle to file so the host picks it up via tail -f */
+    snprintf(cmd, sizeof(cmd), "echo %d >> %s", g_rotation, g_rotation_file);
+    system(cmd);
 }
 
 int main(int argc, char *argv[])
@@ -69,11 +96,24 @@ int main(int argc, char *argv[])
     GtkWidget *spacer = gtk_label_new("");
     gtk_box_pack_start(GTK_BOX(vbox), spacer, TRUE, TRUE, 0);
 
+    /* Rotate button */
+    GtkWidget *rotate_btn = gtk_button_new_with_label("Rotate (Landscape)");
+    gtk_widget_set_size_request(rotate_btn, 400, 120);
+
+    PangoFontDescription *rotate_font = pango_font_description_from_string("Sans Bold 28");
+    gtk_widget_modify_font(gtk_bin_get_child(GTK_BIN(rotate_btn)), rotate_font);
+    pango_font_description_free(rotate_font);
+
+    g_signal_connect(rotate_btn, "clicked", G_CALLBACK(on_rotate_clicked), rotate_btn);
+
+    GtkWidget *rotate_align = gtk_alignment_new(0.5, 1.0, 0.0, 0.0);
+    gtk_container_add(GTK_CONTAINER(rotate_align), rotate_btn);
+    gtk_box_pack_end(GTK_BOX(vbox), rotate_align, FALSE, FALSE, 20);
+
     /* Exit button */
     GtkWidget *button = gtk_button_new_with_label("Exit Tablet Mode");
     gtk_widget_set_size_request(button, 400, 120);
 
-    /* Style the button text large */
     PangoFontDescription *font = pango_font_description_from_string("Sans Bold 28");
     gtk_widget_modify_font(gtk_bin_get_child(GTK_BIN(button)), font);
     pango_font_description_free(font);

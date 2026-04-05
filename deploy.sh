@@ -47,17 +47,7 @@ scp $SCP_OPTS "$KINDLE_DIR/kual/kindle-tablet/bin/stop.sh" \
 scp $SCP_OPTS "$KINDLE_DIR/kual/kindle-tablet/bin/status.sh" \
     "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
 
-# Copy tablet-daemon binary
-if [ -f "$KINDLE_DIR/bin/tablet-daemon" ]; then
-    echo "Copying tablet-daemon binary..."
-    scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-daemon" \
-        "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
-else
-    echo "WARNING: tablet-daemon binary not found!"
-    echo "  Build it first:  make -C kindle"
-fi
-
-# Copy tablet-ui binary (GTK close button app)
+# Copy tablet-ui binary (GTK UI app)
 if [ -f "$KINDLE_DIR/bin/tablet-ui" ]; then
     echo "Copying tablet-ui binary..."
     scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-ui" \
