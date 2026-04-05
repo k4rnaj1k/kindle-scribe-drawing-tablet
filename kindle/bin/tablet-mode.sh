@@ -12,6 +12,7 @@
 ACTION="${1:-start}"
 MARKER="/tmp/tablet-mode-active"
 EXT_DIR="/mnt/us/extensions/kindle-tablet"
+DAEMON_PORT=8234
 
 # ---- Framework control ----
 
@@ -21,6 +22,9 @@ freeze_framework() {
 
     # Prevent screensaver from blanking the display
     lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
+
+    # Open TCP port for tablet-daemon
+    iptables -A INPUT -i wlan0 -p tcp --dport "$DAEMON_PORT" -j ACCEPT 2>/dev/null
 }
 
 thaw_framework() {
@@ -29,6 +33,9 @@ thaw_framework() {
 
     # Allow screensaver again
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
+
+    # Close TCP port
+    iptables -D INPUT -i wlan0 -p tcp --dport "$DAEMON_PORT" -j ACCEPT 2>/dev/null
 }
 
 # ---- Start ----
@@ -45,6 +52,29 @@ start_tablet_mode() {
 
     freeze_framework
 
+    # Auto-detect pen device
+    PEN_DEVICE=""
+    for name_file in /sys/class/input/event*/device/name; do
+        name=$(cat "$name_file" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        case "$name" in
+            *wacom*|*stylus*|*ntx_event*|*digitizer*|*pen*)
+                evdev=$(echo "$name_file" | sed 's|/sys/class/input/\(event[0-9]*\)/.*|\1|')
+                PEN_DEVICE="/dev/input/$evdev"
+                break
+                ;;
+        esac
+    done
+
+    if [ -n "$PEN_DEVICE" ]; then
+        "$EXT_DIR/bin/tablet-daemon" "$PEN_DEVICE" "$DAEMON_PORT" \
+            > /tmp/tablet-daemon.log 2>&1 &
+        DAEMON_PID=$!
+        echo "tablet-daemon started (pid=$DAEMON_PID, device=$PEN_DEVICE, port=$DAEMON_PORT)"
+    else
+        echo "WARNING: could not auto-detect pen device, tablet-daemon not started"
+        DAEMON_PID=""
+    fi
+
     # Launch the GTK UI app (shows exit button)
     "$EXT_DIR/bin/tablet-ui" --marker-file "$MARKER" &
     GTK_PID=$!
@@ -56,8 +86,9 @@ start_tablet_mode() {
     # 'stop' action also removes it.
     while [ -f "$MARKER" ]; do sleep 1; done
 
-    # Clean up GTK app if still running
+    # Clean up GTK app and daemon if still running
     kill "$GTK_PID" 2>/dev/null
+    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
 
     do_stop
 }
@@ -68,8 +99,9 @@ do_stop() {
     rm -f "$MARKER"
     rm -f /tmp/tablet-rotation
 
-    # Kill UI if still running
+    # Kill UI and daemon if still running
     pkill -f "tablet-ui" 2>/dev/null
+    pkill -f "tablet-daemon" 2>/dev/null
 
     # Restore framework
     thaw_framework
