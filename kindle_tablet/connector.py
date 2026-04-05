@@ -257,36 +257,53 @@ class KindleConnector:
         self._threads.append(t)
 
     def _rotation_monitor_loop(self) -> None:
-        """Poll /tmp/tablet-rotation via SSH for rotation changes from tablet-ui."""
+        """Poll /tmp/tablet-rotation via a single SSH channel for rotation changes."""
         from .events import ControlCode
 
         last_value = None
         log.info("Starting rotation monitor (polling /tmp/tablet-rotation)")
 
-        while self._running:
-            try:
-                _, stdout, _ = self._ssh.exec_command(
-                    "cat /tmp/tablet-rotation 2>/dev/null | tail -n1"
-                )
-                line = stdout.read().decode().strip()
-                if line:
-                    angle = int(line)
-                    if angle != last_value:
-                        last_value = angle
-                        log.info("Rotation file changed: %d", angle)
-                        if self.on_control:
-                            self.on_control(ControlCode.CTRL_ROTATION, angle)
-            except ValueError:
-                pass
-            except Exception as e:
-                if self._running:
-                    log.debug("Rotation monitor poll error: %s", e)
+        # Use a single persistent channel that runs a shell loop,
+        # avoiding repeated exec_command calls which aren't thread-safe.
+        cmd = (
+            'while true; do '
+            'cat /tmp/tablet-rotation 2>/dev/null | tail -n1; '
+            'sleep 1; '
+            'done'
+        )
+        transport = self._ssh.get_transport()
+        channel = transport.open_session()
+        channel.exec_command(cmd)
 
-            # Poll every second
-            for _ in range(10):
-                if not self._running:
-                    return
-                time.sleep(0.1)
+        buf = b""
+        try:
+            while self._running:
+                data = channel.recv(256)
+                if not data:
+                    if not self._running:
+                        break
+                    log.warning("Rotation monitor channel closed")
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        angle = int(line)
+                        if angle != last_value:
+                            last_value = angle
+                            log.info("Rotation file changed: %d", angle)
+                            if self.on_control:
+                                self.on_control(ControlCode.CTRL_ROTATION, angle)
+                    except ValueError:
+                        pass
+        except Exception as e:
+            if self._running:
+                log.error("Rotation monitor error: %s", e)
+        finally:
+            channel.close()
 
     def _start_tcp_streaming(self) -> None:
         """Connect to the tablet-server running on the Kindle via TCP."""
