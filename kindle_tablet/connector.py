@@ -257,38 +257,36 @@ class KindleConnector:
         self._threads.append(t)
 
     def _rotation_monitor_loop(self) -> None:
-        """Read rotation values from /tmp/tablet-rotation via SSH tail -f."""
-        cmd = "touch /tmp/tablet-rotation && tail -n0 -f /tmp/tablet-rotation"
-        log.info("Starting rotation monitor: %s", cmd)
-        transport = self._ssh.get_transport()
-        channel = transport.open_session()
-        channel.exec_command(cmd)
+        """Poll /tmp/tablet-rotation via SSH for rotation changes from tablet-ui."""
+        from .events import ControlCode
 
-        buf = b""
-        try:
-            while self._running:
-                data = channel.recv(256)
-                if not data:
-                    if not self._running:
-                        break
-                    log.warning("Rotation monitor channel closed")
-                    break
-                buf += data
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
-                    if line and self.on_control:
-                        try:
-                            angle = int(line)
-                            from .events import ControlCode
+        last_value = None
+        log.info("Starting rotation monitor (polling /tmp/tablet-rotation)")
+
+        while self._running:
+            try:
+                _, stdout, _ = self._ssh.exec_command(
+                    "cat /tmp/tablet-rotation 2>/dev/null | tail -n1"
+                )
+                line = stdout.read().decode().strip()
+                if line:
+                    angle = int(line)
+                    if angle != last_value:
+                        last_value = angle
+                        log.info("Rotation file changed: %d", angle)
+                        if self.on_control:
                             self.on_control(ControlCode.CTRL_ROTATION, angle)
-                        except ValueError:
-                            pass
-        except Exception as e:
-            if self._running:
-                log.error("Rotation monitor error: %s", e)
-        finally:
-            channel.close()
+            except ValueError:
+                pass
+            except Exception as e:
+                if self._running:
+                    log.debug("Rotation monitor poll error: %s", e)
+
+            # Poll every second
+            for _ in range(10):
+                if not self._running:
+                    return
+                time.sleep(0.1)
 
     def _start_tcp_streaming(self) -> None:
         """Connect to the tablet-server running on the Kindle via TCP."""
