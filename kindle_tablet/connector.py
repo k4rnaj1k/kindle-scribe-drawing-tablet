@@ -318,9 +318,10 @@ class KindleConnector:
         log.info("Starting rotation monitor (polling /tmp/tablet-rotation)")
 
         cmd = (
+            'trap "exit 0" TERM HUP; '
             'while true; do '
             'cat /tmp/tablet-rotation 2>/dev/null | tail -n1; '
-            'sleep 1; '
+            'sleep 1 & wait $!; '
             'done'
         )
         transport = self._ssh.get_transport()
