@@ -3,10 +3,11 @@ project('tablet-ui', 'cpp',
   default_options: ['cpp_std=c++17'])
 
 gtk2 = dependency('gtk+-2.0')
+xrandr = dependency('xrandr')
 
 executable('tablet-ui',
   'src/main.cpp',
-  dependencies: [gtk2],
+  dependencies: [gtk2, xrandr],
   cpp_args: '-static-libstdc++',
   link_args: '-static-libstdc++',
   install: true)
