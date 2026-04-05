@@ -4,7 +4,7 @@
  * Displays a fullscreen window with "Rotate" and "Exit Tablet Mode" buttons.
  * Rotate toggles the coordinate mapping between portrait/landscape by writing
  * the rotation angle to /tmp/tablet-rotation for the host to read.
- * It also physically rotates the X display using XRandR.
+ * It also physically rotates the X display via xrandr / lipc.
  * Exit removes the marker file and exits so tablet-mode.sh can restore
  * the framework.
  *
@@ -16,71 +16,40 @@
  */
 
 #include <gtk/gtk.h>
-#include <gdk/gdkx.h>
-#include <X11/Xlib.h>
-#include <X11/extensions/Xrandr.h>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
 
-static const char *g_marker_file = "/tmp/tablet-mode-active";
+static const char *g_marker_file  = "/tmp/tablet-mode-active";
 static const char *g_rotation_file = "/tmp/tablet-rotation";
 static int g_rotation = 0; /* 0 = portrait, 90 = landscape */
 
 /* Widget references for dynamic layout updates */
-static GtkWidget *g_window     = NULL;
 static GtkWidget *g_title      = NULL;
 static GtkWidget *g_subtitle   = NULL;
 static GtkWidget *g_rotate_btn = NULL;
 static GtkWidget *g_exit_btn   = NULL;
 
 /* ------------------------------------------------------------------ */
-/*  X11 RandR rotation – works even if the xrandr CLI isn't installed */
+/*  Display rotation via shell commands                               */
+/*  Tries Kindle-native lipc first, then xrandr as fallback.         */
 /* ------------------------------------------------------------------ */
-static void rotate_x_display(gboolean landscape)
+static void rotate_display(gboolean landscape)
 {
-    Display *dpy = GDK_DISPLAY();
-    Window   root = DefaultRootWindow(dpy);
-
-    XRRScreenConfiguration *sc = XRRGetScreenInfo(dpy, root);
-    if (!sc) return;
-
-    Rotation  current_rotation;
-    SizeID    current_size = XRRConfigCurrentConfiguration(sc, &current_rotation);
-
-    Rotation desired = landscape ? RR_Rotate_270 : RR_Rotate_0;
-
-    /* Only act if the rotation actually changed */
-    if (current_rotation != desired) {
-        int nsizes = 0;
-        XRRScreenSize *sizes = XRRConfigSizes(sc, &nsizes);
-
-        /* After rotation the screen dimensions swap.  Pick the SizeID that
-         * matches the rotated geometry. */
-        SizeID target_size = current_size;
-        if (nsizes > 0) {
-            int want_w, want_h;
-            if (landscape) {
-                /* landscape: physical width > height */
-                want_w = sizes[current_size].height;
-                want_h = sizes[current_size].width;
-            } else {
-                want_w = sizes[current_size].width;
-                want_h = sizes[current_size].height;
-            }
-            for (int i = 0; i < nsizes; i++) {
-                if (sizes[i].width == want_w && sizes[i].height == want_h) {
-                    target_size = i;
-                    break;
-                }
-            }
-        }
-
-        XRRSetScreenConfig(dpy, sc, root, target_size, desired,
-                           CurrentTime);
+    if (landscape) {
+        /* Kindle WM orientation property */
+        system("lipc-set-prop com.lab126.winmgr setOrientation L 2>/dev/null");
+        /* xrandr fallback: auto-detect the connected output name */
+        system("OUT=$(xrandr 2>/dev/null | awk '/ connected/{print $1; exit}');"
+               "[ -n \"$OUT\" ] && xrandr --output \"$OUT\" --rotate left 2>/dev/null"
+               "|| xrandr -o left 2>/dev/null");
+    } else {
+        system("lipc-set-prop com.lab126.winmgr setOrientation U 2>/dev/null");
+        system("OUT=$(xrandr 2>/dev/null | awk '/ connected/{print $1; exit}');"
+               "[ -n \"$OUT\" ] && xrandr --output \"$OUT\" --rotate normal 2>/dev/null"
+               "|| xrandr -o normal 2>/dev/null");
     }
-    XRRFreeScreenConfigInfo(sc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,56 +91,44 @@ static void update_layout_for_rotation(void)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Stylus filtering – enable XInput devices, block pen button-press  */
+/*  Stylus filtering                                                  */
+/*                                                                    */
+/*  GTK2 normally merges all devices into the core pointer so         */
+/*  event->device->source is always GDK_SOURCE_MOUSE.  We therefore  */
+/*  rely on a short timestamp window: the pen digitizer fires a       */
+/*  synthetic core-pointer event within a few ms of the real XI       */
+/*  event.  By recording the time of any identifiable pen event we    */
+/*  can suppress the duplicate on the same button.                    */
+/*                                                                    */
+/*  On Kindle's GTK2 build, gdk_device_set_mode() crashes (likely    */
+/*  because the XI extension is not configured), so we intentionally  */
+/*  skip enabling extended input devices and rely solely on the       */
+/*  source / name check plus the timestamp guard.                     */
 /* ------------------------------------------------------------------ */
-
-/* Timestamp of the last button-press from a pen device.  When GTK2 merges
- * the XInput event into the core pointer a second button-press-event fires
- * with GDK_SOURCE_MOUSE.  We suppress that duplicate too. */
 static guint32 g_last_pen_time = 0;
 
-static void enable_xinput_devices(void)
+static gboolean is_stylus_device(GdkDevice *dev)
 {
-    /* Activate every non-core-pointer device in SCREEN mode so that
-     * button-press-event carries the real GdkDevice with the correct
-     * source field (PEN / ERASER / CURSOR / …). */
-    GList *devices = gdk_devices_list();
-    for (GList *d = devices; d != NULL; d = d->next) {
-        GdkDevice *dev = static_cast<GdkDevice *>(d->data);
-        /* Only touch devices we care about: pens, erasers, cursors */
-        if (dev->source == GDK_SOURCE_PEN ||
-            dev->source == GDK_SOURCE_ERASER ||
-            dev->source == GDK_SOURCE_CURSOR) {
-            gdk_device_set_mode(dev, GDK_MODE_SCREEN);
-        }
-    }
-}
-
-static gboolean is_stylus_device(GdkDevice *device)
-{
-    if (!device)
+    if (!dev)
         return FALSE;
 
-    GdkInputSource src = device->source;
+    GdkInputSource src = dev->source;
     if (src == GDK_SOURCE_PEN || src == GDK_SOURCE_ERASER)
         return TRUE;
 
-    /* Fallback: check device name */
-    const gchar *name = device->name;
+    const gchar *name = dev->name;
     if (name) {
         gchar *lower = g_ascii_strdown(name, -1);
-        gboolean pen = (strstr(lower, "pen")   != NULL ||
-                        strstr(lower, "stylus") != NULL ||
-                        strstr(lower, "eraser") != NULL ||
-                        strstr(lower, "wacom")  != NULL);
+        gboolean pen = (strstr(lower, "pen")    != NULL ||
+                        strstr(lower, "stylus")  != NULL ||
+                        strstr(lower, "eraser")  != NULL ||
+                        strstr(lower, "wacom")   != NULL);
         g_free(lower);
         return pen;
     }
     return FALSE;
 }
 
-/* Connected to button-press-event on every button widget.
- * Returns TRUE to swallow the event (prevents "clicked" from firing). */
 static gboolean on_button_press_filter(GtkWidget *, GdkEventButton *event, gpointer)
 {
     /* Direct hit from an XInput pen/eraser device */
@@ -180,7 +137,7 @@ static gboolean on_button_press_filter(GtkWidget *, GdkEventButton *event, gpoin
         return TRUE;
     }
 
-    /* Core-pointer echo of the same physical tap (arrives within a few ms) */
+    /* Core-pointer echo of the same physical tap (arrives within ~50 ms) */
     if (event->time - g_last_pen_time < 200)
         return TRUE;
 
@@ -194,7 +151,7 @@ static void on_exit_clicked(GtkWidget *, gpointer)
 {
     /* Restore portrait before exiting so the framework isn't left rotated */
     if (g_rotation != 0)
-        rotate_x_display(FALSE);
+        rotate_display(FALSE);
 
     unlink(g_marker_file);
     gtk_main_quit();
@@ -212,10 +169,8 @@ static void on_rotate_clicked(GtkWidget *, gpointer)
         gtk_button_set_label(GTK_BUTTON(g_rotate_btn), "Rotate (Landscape)");
     }
 
-    /* Physically rotate the X display */
-    rotate_x_display(g_rotation == 90);
+    rotate_display(g_rotation == 90);
 
-    /* Write rotation angle to file so the host picks it up */
     snprintf(cmd, sizeof(cmd), "echo %d >> %s", g_rotation, g_rotation_file);
     system(cmd);
 
@@ -227,7 +182,6 @@ static void on_rotate_clicked(GtkWidget *, gpointer)
 /* ------------------------------------------------------------------ */
 int main(int argc, char *argv[])
 {
-    /* Parse --marker-file argument */
     for (int i = 1; i < argc - 1; i++) {
         if (strcmp(argv[i], "--marker-file") == 0) {
             g_marker_file = argv[i + 1];
@@ -237,20 +191,17 @@ int main(int argc, char *argv[])
 
     gtk_init(&argc, &argv);
 
-    /* Enable XInput extended devices so we can distinguish pen from touch */
-    enable_xinput_devices();
-
     /* Create fullscreen window with awesome WM title */
-    g_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(g_window),
+    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window),
         "L:A_N:application_PC:N_ID:com.lab126.kindletablet");
-    gtk_window_fullscreen(GTK_WINDOW(g_window));
-    g_signal_connect(g_window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    gtk_window_fullscreen(GTK_WINDOW(window));
+    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     /* Vertical layout */
     GtkWidget *vbox = gtk_vbox_new(FALSE, 10);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 30);
-    gtk_container_add(GTK_CONTAINER(g_window), vbox);
+    gtk_container_add(GTK_CONTAINER(window), vbox);
 
     /* Title label */
     g_title = gtk_label_new(NULL);
@@ -291,8 +242,7 @@ int main(int argc, char *argv[])
     /* Apply initial portrait layout */
     update_layout_for_rotation();
 
-    gtk_widget_show_all(g_window);
-
+    gtk_widget_show_all(window);
     gtk_main();
 
     return 0;
