@@ -57,6 +57,15 @@ else
     echo "  Build it first:  make -C kindle gtk-ui MESON_CROSS=<path>"
 fi
 
+# Copy tablet-daemon binary (TCP event streaming server)
+if [ -f "$KINDLE_DIR/bin/tablet-daemon" ]; then
+    echo "Copying tablet-daemon binary..."
+    scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-daemon" \
+        "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
+else
+    echo "WARNING: tablet-daemon binary not found (TCP mode will not work)"
+fi
+
 # Make everything executable
 echo "Setting permissions..."
 ssh $SSH_OPTS "$SSH_USER@$KINDLE_IP" "

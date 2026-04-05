@@ -2,7 +2,9 @@ from __future__ import annotations
 
 """Kindle connection manager - SSH and TCP streaming modes."""
 
+import copy
 import logging
+import queue
 import socket
 import threading
 import time
@@ -51,6 +53,7 @@ class KindleConnector:
         self._running = False
         self._threads: list[threading.Thread] = []
         self.parser = EventParser(arch_bits=32)
+        self._dispatch_queue: queue.Queue = queue.Queue()
 
     def connect(self) -> None:
         """Establish SSH connection to the Kindle."""
@@ -187,6 +190,10 @@ class KindleConnector:
 
         self._running = True
 
+        t = threading.Thread(target=self._dispatch_loop, daemon=True, name="dispatcher")
+        t.start()
+        self._threads.append(t)
+
         if self.config.mode == "tcp":
             self._start_tcp_streaming()
         else:
@@ -237,17 +244,64 @@ class KindleConnector:
                 events = parser.feed(data)
                 for ev in events:
                     if isinstance(ev, tuple) and ev[0] == "control":
-                        if self.on_control:
-                            self.on_control(ev[1], ev[2])
-                    elif ev == "pen" and self.on_pen:
-                        self.on_pen(parser.pen)
-                    elif ev == "touch" and self.on_touch:
-                        self.on_touch(parser.touch)
+                        self._dispatch_queue.put(("control", ev[1], ev[2]))
+                    elif ev == "pen":
+                        self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
+                    elif ev == "touch":
+                        self._dispatch_queue.put(("touch", copy.deepcopy(parser.touch)))
         except Exception as e:
             if self._running:
                 log.error("Error reading %s: %s", device_type, e)
         finally:
             channel.close()
+
+    def _dispatch_loop(self) -> None:
+        """Dispatch queued events to callbacks, coalescing redundant move events.
+
+        Runs in its own thread so HID writes never block the reader thread.
+        Consecutive pen events with the same transition state (in_range/touching/
+        buttons unchanged) are collapsed to the latest position, preventing the
+        freeze-then-burst behaviour caused by SSH buffers filling up while the
+        HID write was slow.
+        """
+        while self._running:
+            try:
+                item = self._dispatch_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            ev_type = item[0]
+
+            if ev_type == "pen":
+                pen_state = item[1]
+                # Coalesce trailing move events: keep draining the queue while the
+                # next item is also a pen event with the same transition state.
+                while True:
+                    try:
+                        next_item = self._dispatch_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if (next_item[0] == "pen"
+                            and next_item[1].touching == pen_state.touching
+                            and next_item[1].in_range == pen_state.in_range
+                            and next_item[1].button1 == pen_state.button1
+                            and next_item[1].eraser == pen_state.eraser):
+                        # Pure move/pressure update — drop the older one
+                        pen_state = next_item[1]
+                    else:
+                        # State transition or different event type — put it back
+                        self._dispatch_queue.put(next_item)
+                        break
+                if self.on_pen:
+                    self.on_pen(pen_state)
+
+            elif ev_type == "touch":
+                if self.on_touch:
+                    self.on_touch(item[1])
+
+            elif ev_type == "control":
+                if self.on_control:
+                    self.on_control(item[1], item[2])
 
     def _start_rotation_monitor(self) -> None:
         """Monitor /tmp/tablet-rotation for changes written by tablet-ui."""
@@ -309,11 +363,11 @@ class KindleConnector:
         stream_port = self.config.kindle.stream_port
         pen_device = self.config.pen_device
 
-        log.info("Starting tablet-server on Kindle (port %d)...", stream_port)
+        log.info("Starting tablet-daemon on Kindle (port %d)...", stream_port)
         # Kill any existing server, then start a new one
         self._ssh.exec_command(
-            f"pkill -f 'tablet-server' 2>/dev/null; "
-            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-server.sh "
+            f"pkill -f 'tablet-daemon' 2>/dev/null; "
+            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-daemon "
             f"{pen_device} {stream_port} > /dev/null 2>&1 &"
         )
         time.sleep(1)  # Give the server a moment to start
@@ -355,10 +409,10 @@ class KindleConnector:
                     break
                 events = parser.feed(data)
                 for ev in events:
-                    if ev == "pen" and self.on_pen:
-                        self.on_pen(parser.pen)
-                    elif ev == "touch" and self.on_touch:
-                        self.on_touch(parser.touch)
+                    if ev == "pen":
+                        self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
+                    elif ev == "touch":
+                        self._dispatch_queue.put(("touch", copy.deepcopy(parser.touch)))
         except Exception as e:
             if self._running:
                 log.error("TCP read error: %s", e)
