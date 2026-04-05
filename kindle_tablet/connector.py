@@ -257,53 +257,75 @@ class KindleConnector:
         self._threads.append(t)
 
     def _rotation_monitor_loop(self) -> None:
-        """Poll /tmp/tablet-rotation via a single SSH channel for rotation changes."""
+        """Poll /tmp/tablet-rotation via SSH for rotation changes from tablet-ui.
+
+        Uses a dedicated SSH connection to avoid channel limits on the Kindle's
+        dropbear SSH server (pen and touch already use channels on the main
+        connection).
+        """
         from .events import ControlCode
 
         last_value = None
         log.info("Starting rotation monitor (polling /tmp/tablet-rotation)")
 
-        # Use a single persistent channel that runs a shell loop,
-        # avoiding repeated exec_command calls which aren't thread-safe.
-        cmd = (
-            'while true; do '
-            'cat /tmp/tablet-rotation 2>/dev/null | tail -n1; '
-            'sleep 1; '
-            'done'
-        )
-        transport = self._ssh.get_transport()
-        channel = transport.open_session()
-        channel.exec_command(cmd)
+        try:
+            # Open a separate SSH connection for rotation monitoring
+            # to avoid hitting dropbear's channel limit.
+            monitor_ssh = paramiko.SSHClient()
+            monitor_ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        buf = b""
+            connect_kwargs: dict = {
+                "hostname": self.config.kindle.host,
+                "port": self.config.kindle.port,
+                "username": self.config.kindle.username,
+                "timeout": 10,
+            }
+            if self.config.kindle.key_path:
+                connect_kwargs["key_filename"] = self.config.kindle.key_path
+            elif self.config.kindle.password:
+                connect_kwargs["password"] = self.config.kindle.password
+            else:
+                from pathlib import Path
+                default_key = Path.home() / ".ssh" / "id_rsa"
+                if default_key.exists():
+                    connect_kwargs["key_filename"] = str(default_key)
+
+            monitor_ssh.connect(**connect_kwargs)
+            log.info("Rotation monitor SSH connection established")
+        except Exception as e:
+            log.error("Rotation monitor: could not open SSH connection: %s", e)
+            return
+
         try:
             while self._running:
-                data = channel.recv(256)
-                if not data:
-                    if not self._running:
-                        break
-                    log.warning("Rotation monitor channel closed")
-                    break
-                buf += data
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
+                try:
+                    _, stdout, _ = monitor_ssh.exec_command(
+                        "cat /tmp/tablet-rotation 2>/dev/null | tail -n1"
+                    )
+                    line = stdout.read().decode().strip()
+                    if line:
                         angle = int(line)
                         if angle != last_value:
                             last_value = angle
                             log.info("Rotation file changed: %d", angle)
                             if self.on_control:
                                 self.on_control(ControlCode.CTRL_ROTATION, angle)
-                    except ValueError:
-                        pass
-        except Exception as e:
-            if self._running:
-                log.error("Rotation monitor error: %s", e)
+                except ValueError:
+                    pass
+                except Exception as e:
+                    if self._running:
+                        log.debug("Rotation monitor poll error: %s", e)
+
+                # Poll every second
+                for _ in range(10):
+                    if not self._running:
+                        return
+                    time.sleep(0.1)
         finally:
-            channel.close()
+            try:
+                monitor_ssh.close()
+            except Exception:
+                pass
 
     def _start_tcp_streaming(self) -> None:
         """Connect to the tablet-server running on the Kindle via TCP."""
