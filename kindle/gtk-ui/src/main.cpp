@@ -130,22 +130,46 @@ static gboolean rect_contains(const Rect *r, double x, double y)
 /* ------------------------------------------------------------------ */
 /*  Coordinate transform: screen → drawing space                      */
 /*                                                                    */
-/*  In portrait mode the two spaces are identical.                    */
-/*  In landscape mode (90° CCW cairo rotation):                       */
-/*    cairo_translate(0, H); cairo_rotate(-π/2);                      */
-/*  Inverse:  draw_x = screen_y,   draw_y = W - screen_x             */
-/*  Drawing space dimensions become (H × W).                         */
+/*  Cairo forward transforms and their inverses:                      */
+/*                                                                    */
+/*   0°:  identity                                                    */
+/*        draw(W×H),  sx=dx,        sy=dy                            */
+/*        inverse:    dx=sx,        dy=sy                            */
+/*                                                                    */
+/*  90°:  translate(0,H) + rotate(-π/2)                              */
+/*        draw(H×W),  sx=dy,        sy=H-dx                          */
+/*        inverse:    dx=H-sy,      dy=sx                            */
+/*                                                                    */
+/* 180°:  translate(W,H) + rotate(π)                                 */
+/*        draw(W×H),  sx=W-dx,      sy=H-dy                          */
+/*        inverse:    dx=W-sx,      dy=H-sy                          */
+/*                                                                    */
+/* 270°:  translate(W,0) + rotate(π/2)                               */
+/*        draw(H×W),  sx=W-dy,      sy=dx                            */
+/*        inverse:    dx=sy,        dy=W-sx                          */
 /* ------------------------------------------------------------------ */
 static void screen_to_drawing(double sx, double sy,
                                double *dx, double *dy,
                                int win_w, int win_h)
 {
-    if (g_rotation == 90) {
+    switch (g_rotation) {
+    case 90:
+        /* forward: sx = win_w - dy, sy = dx  →  inverse: dx = sy, dy = win_w - sx */
         *dx = sy;
         *dy = win_w - sx;
-    } else {
+        break;
+    case 180:
+        *dx = win_w - sx;
+        *dy = win_h - sy;
+        break;
+    case 270:
+        *dx = sy;
+        *dy = win_w - sx;
+        break;
+    default: /* 0° */
         *dx = sx;
         *dy = sy;
+        break;
     }
 }
 
@@ -292,9 +316,9 @@ static gboolean on_expose(GtkWidget *widget, GdkEventExpose *, gpointer)
     cairo_t *cr = gdk_cairo_create(widget->window);
 
     if (g_rotation == 90) {
-        /* 90° CCW rotation: drawing space becomes (win_h × win_w) */
-        cairo_translate(cr, 0, win_h);
-        cairo_rotate(cr, -M_PI / 2.0);
+        /* 90° CW rotation: drawing space becomes (win_h × win_w) */
+        cairo_translate(cr, win_w, 0);
+        cairo_rotate(cr, M_PI / 2.0);
         do_draw(cr, win_h, win_w);
     } else {
         do_draw(cr, win_w, win_h);
