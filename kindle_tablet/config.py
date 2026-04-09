@@ -31,8 +31,6 @@ class TabletConfig:
     pressure_floor: float = 0.05
     # Whether to map tilt
     enable_tilt: bool = True
-    # Whether to process touch input
-    enable_touch: bool = True
 
 
 @dataclass
@@ -43,4 +41,3 @@ class Config:
     mode: str = "ssh"
     # Event device paths on the Kindle (auto-detected if empty)
     pen_device: str = ""
-    touch_device: str = ""

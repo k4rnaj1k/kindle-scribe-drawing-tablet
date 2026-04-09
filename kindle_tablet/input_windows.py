@@ -42,6 +42,7 @@ else:
             self.screen_height = user32.GetSystemMetrics(1)
             self._left_down = False
             self._right_down = False
+            self._eraser_active = False
             self._device = None
 
             if hid is None:
@@ -75,10 +76,20 @@ else:
                 log.error("Could not find a VMulti interface that accepts HID reports.")
 
         def _get_buttons(self) -> int:
-            """Constructs the button state byte using C# BitPositions."""
+            """Constructs the button state byte using C# BitPositions.
+
+            Eraser end proximity sets Invert; eraser contact uses Eraser bit
+            (not Press) so Windows Ink recognises it as the eraser tool.
+            Regular tip contact uses Press as before.
+            """
             buttons = (1 << BitPositions.InRange)
-            if self._left_down:
-                buttons |= (1 << BitPositions.Press)
+            if self._eraser_active:
+                buttons |= (1 << BitPositions.Invert)
+                if self._left_down:
+                    buttons |= (1 << BitPositions.Eraser)
+            else:
+                if self._left_down:
+                    buttons |= (1 << BitPositions.Press)
             if self._right_down:
                 buttons |= (1 << BitPositions.Barrel)
             return buttons
@@ -115,16 +126,18 @@ else:
             except Exception as e:
                 log.error(f"HID communication error: {e}")
 
-        # --- RESTORED API SIGNATURES ---
-
         def move(self, x: float, y: float, pressure: float = 0.0,
-                 tilt_x: float = 0.0, tilt_y: float = 0.0) -> None:
-            """Move cursor to (x, y). Corrected to accept all positional args."""
+                 tilt_x: float = 0.0, tilt_y: float = 0.0,
+                 eraser: bool = False) -> None:
+            """Move cursor to (x, y)."""
+            self._eraser_active = eraser
             self._send_report(x, y, pressure, self._get_buttons())
 
         def pen_down(self, x: float, y: float, pressure: float = 0.5,
-                     tilt_x: float = 0.0, tilt_y: float = 0.0) -> None:
+                     tilt_x: float = 0.0, tilt_y: float = 0.0,
+                     eraser: bool = False) -> None:
             """Pen contact initiated."""
+            self._eraser_active = eraser
             self._left_down = True
             self._send_report(x, y, pressure, self._get_buttons())
 
@@ -132,6 +145,7 @@ else:
             """Pen contact lifted."""
             self._left_down = False
             self._send_report(x, y, 0.0, self._get_buttons())
+            self._eraser_active = False
 
         def button_down(self, x: float, y: float) -> None:
             """Right click / Barrel button down."""

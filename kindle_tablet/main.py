@@ -7,6 +7,7 @@ and injects them as tablet input on the host machine.
 """
 
 import argparse
+import gc
 import json
 import logging
 import math
@@ -15,9 +16,14 @@ import sys
 import threading
 from pathlib import Path
 
+# Disable cyclic GC to avoid periodic pauses during pen streaming.
+# PenState/TouchState objects don't form reference cycles, so refcounting
+# is sufficient for cleanup.
+gc.disable()
+
 from .config import Config, KindleConfig, TabletConfig
 from .connector import KindleConnector
-from .events import ControlCode, PenState, TouchState
+from .events import ControlCode, PenState
 
 log = logging.getLogger("kindle_tablet")
 
@@ -40,7 +46,6 @@ def load_config(path: Path) -> Config:
         tablet=tablet,
         mode=data.get("mode", "ssh"),
         pen_device=data.get("pen_device", ""),
-        touch_device=data.get("touch_device", ""),
     )
     return cfg
 
@@ -65,11 +70,9 @@ def save_config(cfg: Config, path: Path) -> None:
             "screen_region": list(cfg.tablet.screen_region),
             "pressure_curve": cfg.tablet.pressure_curve,
             "enable_tilt": cfg.tablet.enable_tilt,
-            "enable_touch": cfg.tablet.enable_touch,
         },
         "mode": cfg.mode,
         "pen_device": cfg.pen_device,
-        "touch_device": cfg.touch_device,
     }
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -96,8 +99,6 @@ class TabletHandler:
         self.backend = backend
         self._pen_was_touching = False
         self._pen_was_button1 = False
-        self._last_touch_y: int | None = None
-        self._last_touch_x: int | None = None
         # Store original axis limits for rotation
         self._original_max_x = config.tablet.kindle_max_x
         self._original_max_y = config.tablet.kindle_max_y
@@ -209,21 +210,14 @@ class TabletHandler:
         # Handle pen touch (left-click / draw)
         if pen.touching and not self._pen_was_touching:
             if hasattr(self.backend, "pen_down"):
-                try:
-                    self.backend.pen_down(x, y, pressure, tilt_x, tilt_y, eraser)
-                except TypeError:
-                    # Windows backend doesn't have eraser param
-                    self.backend.pen_down(x, y, pressure, tilt_x, tilt_y)
+                self.backend.pen_down(x, y, pressure, tilt_x, tilt_y, eraser)
             self._pen_was_touching = True
         elif not pen.touching and self._pen_was_touching:
             self.backend.pen_up(x, y)
             self._pen_was_touching = False
         else:
             # Hovering or dragging - send move with current pressure
-            try:
-                self.backend.move(x, y, pressure, tilt_x, tilt_y, eraser)
-            except TypeError:
-                self.backend.move(x, y, pressure, tilt_x, tilt_y)
+            self.backend.move(x, y, pressure, tilt_x, tilt_y, eraser)
 
     def on_control(self, code: int, value: int) -> None:
         """Handle a control message (rotation change from tablet-ui)."""
@@ -245,35 +239,6 @@ class TabletHandler:
             self._compute_mapping()
         elif code == ControlCode.CTRL_DISCONNECT:
             log.info("Tablet daemon disconnected")
-
-    def on_touch(self, touch: TouchState) -> None:
-        """Handle touch state update. Single finger = move cursor, two fingers = scroll."""
-        active_slots = [s for s in touch.slots.values() if s.active]
-
-        if len(active_slots) == 0:
-            self._last_touch_x = None
-            self._last_touch_y = None
-            return
-
-        if len(active_slots) == 1:
-            # Single touch: move cursor
-            slot = active_slots[0]
-            x, y = self.map_coords(slot.x, slot.y)
-            self.backend.move(x, y)
-            self._last_touch_x = slot.x
-            self._last_touch_y = slot.y
-
-        elif len(active_slots) >= 2:
-            # Two-finger scroll
-            avg_x = sum(s.x for s in active_slots) / len(active_slots)
-            avg_y = sum(s.y for s in active_slots) / len(active_slots)
-            if self._last_touch_x is not None and self._last_touch_y is not None:
-                dx = int((avg_x - self._last_touch_x) / 10)
-                dy = int((avg_y - self._last_touch_y) / 10)
-                if dx != 0 or dy != 0:
-                    self.backend.scroll(dx, -dy)
-            self._last_touch_x = int(avg_x)
-            self._last_touch_y = int(avg_y)
 
 
 def setup_kindle_tablet_mode(connector: KindleConnector) -> None:
@@ -333,8 +298,6 @@ def main() -> None:
     parser.add_argument("--mode", choices=["ssh", "tcp"],
                         help="Connection mode (default: ssh)")
     parser.add_argument("--pen-device", help="Pen input device path on Kindle")
-    parser.add_argument("--touch-device", help="Touch input device path on Kindle")
-    parser.add_argument("--no-touch", action="store_true", help="Disable touch input")
     parser.add_argument("--pressure-curve", type=float,
                         help="Pressure curve (0.1-3.0, default: 0.7)")
     parser.add_argument("--config", type=Path, default=CONFIG_PATH,
@@ -372,10 +335,6 @@ def main() -> None:
         cfg.mode = args.mode
     if args.pen_device:
         cfg.pen_device = args.pen_device
-    if args.touch_device:
-        cfg.touch_device = args.touch_device
-    if args.no_touch:
-        cfg.tablet.enable_touch = False
     if args.pressure_curve is not None:
         cfg.tablet.pressure_curve = args.pressure_curve
 
@@ -416,7 +375,6 @@ def main() -> None:
 
     # Wire up callbacks
     connector.on_pen = handler.on_pen
-    connector.on_touch = handler.on_touch if cfg.tablet.enable_touch else None
     connector.on_control = handler.on_control
 
     # Start streaming
@@ -439,8 +397,6 @@ def main() -> None:
 
         print("\n  Kindle Tablet active!")
         print(f"  Mode: {cfg.mode} | Pen: {cfg.pen_device}")
-        if cfg.touch_device:
-            print(f"  Touch: {cfg.touch_device}")
         print("  Press Ctrl+C to stop.\n")
 
         # Save config with auto-detected values

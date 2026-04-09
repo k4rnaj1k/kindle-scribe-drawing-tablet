@@ -35,6 +35,7 @@
 static const char *g_marker_file   = "/tmp/tablet-mode-active";
 static const char *g_rotation_file = "/tmp/tablet-rotation";
 static int         g_rotation      = 0;   /* 0 = portrait, 90 = landscape */
+static int         g_locked        = 0;   /* 0 = unlocked, 1 = locked */
 
 static GtkWidget  *g_canvas        = NULL;
 
@@ -118,8 +119,10 @@ typedef struct { double x, y, w, h; } Rect;
 
 static Rect   g_rect_rotate;
 static Rect   g_rect_exit;
+static Rect   g_rect_lock;
 static gboolean g_rotate_pressed = FALSE;
 static gboolean g_exit_pressed   = FALSE;
+static gboolean g_lock_pressed   = FALSE;
 
 static gboolean rect_contains(const Rect *r, double x, double y)
 {
@@ -191,8 +194,10 @@ static void draw_rounded_rect(cairo_t *cr, double x, double y,
     cairo_close_path(cr);
 }
 
+/* active = toggled-on state (e.g. lock engaged), distinct from pressed */
 static void draw_button(cairo_t *cr, const Rect *rect,
-                         const char *label, gboolean pressed)
+                         const char *label, gboolean pressed,
+                         gboolean active)
 {
     double x = rect->x, y = rect->y, w = rect->w, h = rect->h;
 
@@ -204,7 +209,9 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     cairo_restore(cr);
 
     /* Button fill */
-    if (pressed)
+    if (active)
+        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);  /* dark = locked */
+    else if (pressed)
         cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
     else
         cairo_set_source_rgb(cr, 0.88, 0.88, 0.88);
@@ -212,7 +219,10 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     cairo_fill(cr);
 
     /* Border */
-    cairo_set_source_rgb(cr, 0.4, 0.4, 0.4);
+    if (active)
+        cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+    else
+        cairo_set_source_rgb(cr, 0.4, 0.4, 0.4);
     cairo_set_line_width(cr, 2.0);
     draw_rounded_rect(cr, x, y, w, h, 14);
     cairo_stroke(cr);
@@ -230,7 +240,10 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     double tx = x + (w - tw / PANGO_SCALE) / 2.0;
     double ty = y + (h - th / PANGO_SCALE) / 2.0;
 
-    cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+    if (active)
+        cairo_set_source_rgb(cr, 0.95, 0.95, 0.95);
+    else
+        cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
     cairo_move_to(cr, tx, ty);
     pango_cairo_show_layout(cr, layout);
     g_object_unref(layout);
@@ -290,12 +303,12 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     double gap    = 30.0;
     double bottom = draw_h - 60.0;
 
-    /* Exit button (lower) */
+    /* Exit button (lowest) */
     g_rect_exit.x = btn_x;
     g_rect_exit.y = bottom - btn_h;
     g_rect_exit.w = btn_w;
     g_rect_exit.h = btn_h;
-    draw_button(cr, &g_rect_exit, "Exit Tablet Mode", g_exit_pressed);
+    draw_button(cr, &g_rect_exit, "Exit Tablet Mode", g_exit_pressed, FALSE);
 
     /* Rotate button (above exit) */
     g_rect_rotate.x = btn_x;
@@ -305,7 +318,17 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     const char *rotate_label = (g_rotation == 0)
         ? "Rotate \xe2\x86\xba Landscape"   /* UTF-8 ↺ */
         : "Rotate \xe2\x86\xba Portrait";
-    draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed);
+    draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed, FALSE);
+
+    /* Lock button (above rotate) */
+    g_rect_lock.x = btn_x;
+    g_rect_lock.y = g_rect_rotate.y - gap - btn_h;
+    g_rect_lock.w = btn_w;
+    g_rect_lock.h = btn_h;
+    const char *lock_label = g_locked
+        ? "\xf0\x9f\x94\x92 Unlock Input"   /* UTF-8 🔒 */
+        : "\xf0\x9f\x94\x93 Lock Input";     /* UTF-8 🔓 */
+    draw_button(cr, &g_rect_lock, lock_label, g_lock_pressed, g_locked);
 }
 
 static gboolean on_expose(GtkWidget *widget, GdkEventExpose *, gpointer)
@@ -344,10 +367,13 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event,
     double dx, dy;
     screen_to_drawing(event->x, event->y, &dx, &dy, win_w, win_h);
 
-    if (rect_contains(&g_rect_rotate, dx, dy)) {
+    if (rect_contains(&g_rect_lock, dx, dy)) {
+        g_lock_pressed = TRUE;
+        gtk_widget_queue_draw(widget);
+    } else if (!g_locked && rect_contains(&g_rect_rotate, dx, dy)) {
         g_rotate_pressed = TRUE;
         gtk_widget_queue_draw(widget);
-    } else if (rect_contains(&g_rect_exit, dx, dy)) {
+    } else if (!g_locked && rect_contains(&g_rect_exit, dx, dy)) {
         g_exit_pressed = TRUE;
         gtk_widget_queue_draw(widget);
     }
@@ -369,17 +395,26 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event,
 
     gboolean do_rotate = FALSE;
     gboolean do_exit   = FALSE;
+    gboolean do_lock   = FALSE;
 
+    if (g_lock_pressed && rect_contains(&g_rect_lock, dx, dy))
+        do_lock = TRUE;
     if (g_rotate_pressed && rect_contains(&g_rect_rotate, dx, dy))
         do_rotate = TRUE;
     if (g_exit_pressed && rect_contains(&g_rect_exit, dx, dy))
         do_exit = TRUE;
 
+    g_lock_pressed   = FALSE;
     g_rotate_pressed = FALSE;
     g_exit_pressed   = FALSE;
     gtk_widget_queue_draw(widget);
 
     /* --- Actions --- */
+    if (do_lock) {
+        g_locked = g_locked ? 0 : 1;
+        gtk_widget_queue_draw(widget);
+    }
+
     if (do_rotate) {
         g_rotation = (g_rotation == 0) ? 90 : 0;
 

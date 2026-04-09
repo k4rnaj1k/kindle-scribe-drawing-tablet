@@ -43,11 +43,9 @@ class KindleConnector:
     """Manages connection to a Kindle Scribe and streams input events."""
 
     def __init__(self, config: Config, on_pen: Callable | None = None,
-                 on_touch: Callable | None = None,
                  on_control: Callable | None = None):
         self.config = config
         self.on_pen = on_pen
-        self.on_touch = on_touch
         self.on_control = on_control
         self._ssh: paramiko.SSHClient | None = None
         self._running = False
@@ -80,6 +78,16 @@ class KindleConnector:
         log.info("Connecting to Kindle at %s:%d...", self.config.kindle.host,
                  self.config.kindle.port)
         self._ssh.connect(**connect_kwargs)
+
+        # Disable Nagle on the SSH transport socket to reduce latency for
+        # small pen event packets.
+        try:
+            transport = self._ssh.get_transport()
+            if transport is not None:
+                transport.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception as e:
+            log.warning("Could not set TCP_NODELAY on SSH transport: %s", e)
+
         log.info("Connected to Kindle.")
 
     def detect_devices(self) -> dict[str, str]:
@@ -117,20 +125,6 @@ class KindleConnector:
             "Could not auto-detect pen device. Set pen_device in config. "
             f"Available: {devices}"
         )
-
-    def auto_detect_touch_device(self) -> str:
-        """Try to auto-detect the touch device path."""
-        devices = self.detect_devices()
-        touch_keywords = ["touch", "cyttsp", "capacitive", "mt", "pt_mt", "finger"]
-        for evname, devname in devices.items():
-            lower = devname.lower()
-            for kw in touch_keywords:
-                if kw in lower:
-                    path = f"/dev/input/{evname}"
-                    log.info("Auto-detected touch device: %s (%s)", path, devname)
-                    return path
-        log.warning("Could not auto-detect touch device.")
-        return ""
 
     def read_device_caps(self, device_path: str) -> dict[str, tuple[int, int]]:
         """Read axis min/max from the device. Returns {axis_name: (min, max)}."""
@@ -182,9 +176,6 @@ class KindleConnector:
         if not self.config.pen_device:
             self.config.pen_device = self.auto_detect_pen_device()
 
-        if not self.config.touch_device and self.config.tablet.enable_touch:
-            self.config.touch_device = self.auto_detect_touch_device()
-
         # Read device capabilities
         self.update_config_from_device(self.config.pen_device)
 
@@ -202,20 +193,11 @@ class KindleConnector:
     def _start_ssh_streaming(self) -> None:
         """Stream events from the Kindle over SSH using raw cat."""
         pen_device = self.config.pen_device
-        touch_device = self.config.touch_device
 
         t = threading.Thread(target=self._ssh_read_loop, args=(pen_device, "pen"),
                              daemon=True, name="pen-reader")
         t.start()
         self._threads.append(t)
-
-        if touch_device and self.config.tablet.enable_touch:
-            touch_parser = EventParser(arch_bits=32)
-            t2 = threading.Thread(target=self._ssh_read_loop,
-                                  args=(touch_device, "touch", touch_parser),
-                                  daemon=True, name="touch-reader")
-            t2.start()
-            self._threads.append(t2)
 
         # Monitor rotation changes from tablet-ui
         self._start_rotation_monitor()
@@ -232,14 +214,36 @@ class KindleConnector:
         channel = transport.open_session()
         channel.exec_command(cmd)
 
+        last_recv = 0.0
+        last_report = time.monotonic()
+        max_recv_gap = 0.0
+        max_recv_bytes = 0
+        recvs = 0
         try:
             while self._running:
                 data = channel.recv(parser.event_size * 64)
+                now = time.monotonic()
                 if not data:
                     if not self._running:
                         break
                     log.warning("SSH channel for %s closed", device_type)
                     break
+
+                if last_recv:
+                    gap = (now - last_recv) * 1000.0
+                    if gap > max_recv_gap:
+                        max_recv_gap = gap
+                last_recv = now
+                recvs += 1
+                if len(data) > max_recv_bytes:
+                    max_recv_bytes = len(data)
+                if now - last_report >= 1.0:
+                    log.debug("reader[%s]: %d recvs, max_gap=%.1fms, max_bytes=%d",
+                              device_type, recvs, max_recv_gap, max_recv_bytes)
+                    last_report = now
+                    max_recv_gap = 0.0
+                    max_recv_bytes = 0
+                    recvs = 0
 
                 events = parser.feed(data)
                 for ev in events:
@@ -247,8 +251,6 @@ class KindleConnector:
                         self._dispatch_queue.put(("control", ev[1], ev[2]))
                     elif ev == "pen":
                         self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
-                    elif ev == "touch":
-                        self._dispatch_queue.put(("touch", copy.deepcopy(parser.touch)))
         except Exception as e:
             if self._running:
                 log.error("Error reading %s: %s", device_type, e)
@@ -264,11 +266,41 @@ class KindleConnector:
         freeze-then-burst behaviour caused by SSH buffers filling up while the
         HID write was slow.
         """
+        # Diagnostics: track max queue depth, slow HID writes, and gaps between
+        # dispatched events. Log a summary once per second.
+        last_report = time.monotonic()
+        max_qsize = 0
+        slow_writes = 0
+        max_write_ms = 0.0
+        coalesced = 0
+        dispatched = 0
+        last_dispatch_time = 0.0
+        max_gap_ms = 0.0
+
         while self._running:
             try:
                 item = self._dispatch_queue.get(timeout=0.1)
             except queue.Empty:
+                now = time.monotonic()
+                if now - last_report >= 1.0:
+                    if dispatched > 0:
+                        log.debug(
+                            "dispatch: %d events, max_q=%d, coalesced=%d, "
+                            "max_write=%.1fms, slow_writes=%d, max_gap=%.1fms",
+                            dispatched, max_qsize, coalesced,
+                            max_write_ms, slow_writes, max_gap_ms)
+                    last_report = now
+                    max_qsize = 0
+                    slow_writes = 0
+                    max_write_ms = 0.0
+                    coalesced = 0
+                    dispatched = 0
+                    max_gap_ms = 0.0
                 continue
+
+            qsize = self._dispatch_queue.qsize()
+            if qsize > max_qsize:
+                max_qsize = qsize
 
             ev_type = item[0]
 
@@ -288,20 +320,45 @@ class KindleConnector:
                             and next_item[1].eraser == pen_state.eraser):
                         # Pure move/pressure update — drop the older one
                         pen_state = next_item[1]
+                        coalesced += 1
                     else:
                         # State transition or different event type — put it back
                         self._dispatch_queue.put(next_item)
                         break
                 if self.on_pen:
+                    t0 = time.monotonic()
                     self.on_pen(pen_state)
-
-            elif ev_type == "touch":
-                if self.on_touch:
-                    self.on_touch(item[1])
+                    elapsed_ms = (time.monotonic() - t0) * 1000.0
+                    if elapsed_ms > max_write_ms:
+                        max_write_ms = elapsed_ms
+                    if elapsed_ms > 5.0:
+                        slow_writes += 1
+                    dispatched += 1
+                    if last_dispatch_time:
+                        gap_ms = (t0 - last_dispatch_time) * 1000.0
+                        if gap_ms > max_gap_ms:
+                            max_gap_ms = gap_ms
+                    last_dispatch_time = t0
 
             elif ev_type == "control":
                 if self.on_control:
                     self.on_control(item[1], item[2])
+
+            now = time.monotonic()
+            if now - last_report >= 1.0:
+                if dispatched > 0:
+                    log.debug(
+                        "dispatch: %d events, max_q=%d, coalesced=%d, "
+                        "max_write=%.1fms, slow_writes=%d, max_gap=%.1fms",
+                        dispatched, max_qsize, coalesced,
+                        max_write_ms, slow_writes, max_gap_ms)
+                last_report = now
+                max_qsize = 0
+                slow_writes = 0
+                max_write_ms = 0.0
+                coalesced = 0
+                dispatched = 0
+                max_gap_ms = 0.0
 
     def _start_rotation_monitor(self) -> None:
         """Monitor /tmp/tablet-rotation for changes written by tablet-ui."""
@@ -315,15 +372,27 @@ class KindleConnector:
         from .events import ControlCode
 
         last_value = None
-        log.info("Starting rotation monitor (polling /tmp/tablet-rotation)")
+        log.info("Starting rotation monitor (tailing /tmp/tablet-rotation)")
 
-        cmd = (
-            'trap "exit 0" TERM HUP; '
-            'while true; do '
-            'cat /tmp/tablet-rotation 2>/dev/null | tail -n1; '
-            'sleep 1 & wait $!; '
-            'done'
-        )
+        # Read current rotation before starting tail so we pick up any value
+        # that was written before we connected.
+        try:
+            _, stdout, _ = self._ssh.exec_command(
+                'cat /tmp/tablet-rotation 2>/dev/null | tail -n1'
+            )
+            initial = stdout.read().decode().strip()
+            if initial:
+                try:
+                    last_value = int(initial)
+                    if self.on_control:
+                        from .events import ControlCode
+                        self.on_control(ControlCode.CTRL_ROTATION, last_value)
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+        cmd = 'touch /tmp/tablet-rotation && tail -f /tmp/tablet-rotation'
         transport = self._ssh.get_transport()
         channel = transport.open_session()
         channel.exec_command(cmd)
@@ -359,23 +428,26 @@ class KindleConnector:
             channel.close()
 
     def _start_tcp_streaming(self) -> None:
-        """Connect to the tablet-server running on the Kindle via TCP."""
-        # First, start the server on the Kindle
+        """Connect to the tablet-daemon running on the Kindle via TCP."""
         stream_port = self.config.kindle.stream_port
         pen_device = self.config.pen_device
 
-        log.info("Starting tablet-daemon on Kindle (port %d)...", stream_port)
-        # Kill any existing server, then start a new one
+        # Start the daemon only if it is not already running (e.g. launched by
+        # tablet-mode.sh).  Always log to /tmp/tablet-daemon.log so errors are
+        # visible on the Kindle.
+        log.info("Ensuring tablet-daemon is running on Kindle (port %d)...", stream_port)
         self._ssh.exec_command(
-            f"pkill -f 'tablet-daemon' 2>/dev/null; "
+            f"pgrep -f 'tablet-daemon' > /dev/null 2>&1 || "
             f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-daemon "
-            f"{pen_device} {stream_port} > /dev/null 2>&1 &"
+            f"{pen_device} {stream_port} >> /tmp/tablet-daemon.log 2>&1 &"
         )
-        time.sleep(1)  # Give the server a moment to start
+        time.sleep(1)  # Give the server a moment to start if it wasn't running
 
         t = threading.Thread(target=self._tcp_read_loop, daemon=True, name="tcp-reader")
         t.start()
         self._threads.append(t)
+
+        self._start_rotation_monitor()
 
     def _tcp_read_loop(self) -> None:
         """Read events from TCP socket."""
@@ -391,6 +463,7 @@ class KindleConnector:
                 sock.settimeout(5)
                 sock.connect((host, port))
                 sock.settimeout(None)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 log.info("Connected to tablet-server.")
                 break
             except (ConnectionRefusedError, socket.timeout):
@@ -403,17 +476,38 @@ class KindleConnector:
             return
 
         parser = self.parser
+        last_recv = 0.0
+        last_report = time.monotonic()
+        max_recv_gap = 0.0
+        max_recv_bytes = 0
+        recvs = 0
         try:
             while self._running:
                 data = sock.recv(parser.event_size * 64)
+                now = time.monotonic()
                 if not data:
                     break
+
+                if last_recv:
+                    gap = (now - last_recv) * 1000.0
+                    if gap > max_recv_gap:
+                        max_recv_gap = gap
+                last_recv = now
+                recvs += 1
+                if len(data) > max_recv_bytes:
+                    max_recv_bytes = len(data)
+                if now - last_report >= 1.0:
+                    log.debug("reader[tcp]: %d recvs, max_gap=%.1fms, max_bytes=%d",
+                              recvs, max_recv_gap, max_recv_bytes)
+                    last_report = now
+                    max_recv_gap = 0.0
+                    max_recv_bytes = 0
+                    recvs = 0
+
                 events = parser.feed(data)
                 for ev in events:
                     if ev == "pen":
                         self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
-                    elif ev == "touch":
-                        self._dispatch_queue.put(("touch", copy.deepcopy(parser.touch)))
         except Exception as e:
             if self._running:
                 log.error("TCP read error: %s", e)
