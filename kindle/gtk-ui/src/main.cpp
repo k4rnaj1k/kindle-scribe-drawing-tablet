@@ -32,12 +32,13 @@
 /* ------------------------------------------------------------------ */
 /*  Globals                                                           */
 /* ------------------------------------------------------------------ */
-static const char *g_marker_file   = "/tmp/tablet-mode-active";
-static const char *g_rotation_file = "/tmp/tablet-rotation";
-static int         g_rotation      = 0;   /* 0 = portrait, 90 = landscape */
-static int         g_locked        = 0;   /* 0 = unlocked, 1 = locked */
+static const char *g_marker_file    = "/tmp/tablet-mode-active";
+static const char *g_rotation_file  = "/tmp/tablet-rotation";
+static const char *g_shortcut_file  = "/tmp/tablet-shortcut";
+static int         g_rotation       = 0;   /* 0 = portrait, 90 = landscape */
+static int         g_locked         = 0;   /* 0 = unlocked, 1 = locked */
 
-static GtkWidget  *g_canvas        = NULL;
+static GtkWidget  *g_canvas         = NULL;
 
 /* ------------------------------------------------------------------ */
 /*  Pen-proximity monitor (background thread)                         */
@@ -113,16 +114,53 @@ static void *pen_monitor_thread(void *)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Shortcut IDs – must match the Python ControlCode / backend enums  */
+/* ------------------------------------------------------------------ */
+#define SHORTCUT_UNDO          1
+#define SHORTCUT_REDO          2
+#define SHORTCUT_BRUSH_SMALLER 3
+#define SHORTCUT_BRUSH_BIGGER  4
+#define SHORTCUT_SAVE          5
+
+static void write_shortcut(int id)
+{
+    FILE *f = fopen(g_shortcut_file, "a");
+    if (f) {
+        fprintf(f, "%d\n", id);
+        fclose(f);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Button hit regions (in drawing-space coordinates)                 */
 /* ------------------------------------------------------------------ */
 typedef struct { double x, y, w, h; } Rect;
 
-static Rect   g_rect_rotate;
-static Rect   g_rect_exit;
-static Rect   g_rect_lock;
-static gboolean g_rotate_pressed = FALSE;
-static gboolean g_exit_pressed   = FALSE;
-static gboolean g_lock_pressed   = FALSE;
+/* Main control buttons */
+static Rect    g_rect_rotate;
+static Rect    g_rect_exit;
+static Rect    g_rect_lock;       /* now small, top-right */
+static gboolean g_rotate_pressed  = FALSE;
+static gboolean g_exit_pressed    = FALSE;
+static gboolean g_lock_pressed    = FALSE;
+
+/* Programmable shortcut buttons */
+#define NUM_SHORTCUTS 5
+
+typedef struct {
+    Rect     rect;
+    gboolean pressed;
+    const char *label;  /* display label */
+    int      id;        /* SHORTCUT_* constant */
+} ShortcutButton;
+
+static ShortcutButton g_shortcuts[NUM_SHORTCUTS] = {
+    { {0,0,0,0}, FALSE, "Undo",  SHORTCUT_UNDO          },
+    { {0,0,0,0}, FALSE, "Redo",  SHORTCUT_REDO          },
+    { {0,0,0,0}, FALSE, "[ Brsh",SHORTCUT_BRUSH_SMALLER },
+    { {0,0,0,0}, FALSE, "] Brsh",SHORTCUT_BRUSH_BIGGER  },
+    { {0,0,0,0}, FALSE, "Save",  SHORTCUT_SAVE          },
+};
 
 static gboolean rect_contains(const Rect *r, double x, double y)
 {
@@ -132,24 +170,6 @@ static gboolean rect_contains(const Rect *r, double x, double y)
 
 /* ------------------------------------------------------------------ */
 /*  Coordinate transform: screen → drawing space                      */
-/*                                                                    */
-/*  Cairo forward transforms and their inverses:                      */
-/*                                                                    */
-/*   0°:  identity                                                    */
-/*        draw(W×H),  sx=dx,        sy=dy                            */
-/*        inverse:    dx=sx,        dy=sy                            */
-/*                                                                    */
-/*  90°:  translate(0,H) + rotate(-π/2)                              */
-/*        draw(H×W),  sx=dy,        sy=H-dx                          */
-/*        inverse:    dx=H-sy,      dy=sx                            */
-/*                                                                    */
-/* 180°:  translate(W,H) + rotate(π)                                 */
-/*        draw(W×H),  sx=W-dx,      sy=H-dy                          */
-/*        inverse:    dx=W-sx,      dy=H-sy                          */
-/*                                                                    */
-/* 270°:  translate(W,0) + rotate(π/2)                               */
-/*        draw(H×W),  sx=W-dy,      sy=dx                            */
-/*        inverse:    dx=sy,        dy=W-sx                          */
 /* ------------------------------------------------------------------ */
 static void screen_to_drawing(double sx, double sy,
                                double *dx, double *dy,
@@ -157,7 +177,6 @@ static void screen_to_drawing(double sx, double sy,
 {
     switch (g_rotation) {
     case 90:
-        /* forward: sx = win_w - dy, sy = dx  →  inverse: dx = sy, dy = win_w - sx */
         *dx = sy;
         *dy = win_w - sx;
         break;
@@ -177,7 +196,7 @@ static void screen_to_drawing(double sx, double sy,
 }
 
 /* ------------------------------------------------------------------ */
-/*  Drawing                                                           */
+/*  Drawing helpers                                                   */
 /* ------------------------------------------------------------------ */
 static void draw_rounded_rect(cairo_t *cr, double x, double y,
                                double w, double h, double r)
@@ -194,28 +213,34 @@ static void draw_rounded_rect(cairo_t *cr, double x, double y,
     cairo_close_path(cr);
 }
 
-/* active = toggled-on state (e.g. lock engaged), distinct from pressed */
-static void draw_button(cairo_t *cr, const Rect *rect,
-                         const char *label, gboolean pressed,
-                         gboolean active)
+/*
+ * draw_button_sized – generic button renderer.
+ *
+ * active   = toggled-on state (e.g. lock engaged)
+ * font_size = Pango font size in points
+ */
+static void draw_button_sized(cairo_t *cr, const Rect *rect,
+                               const char *label, gboolean pressed,
+                               gboolean active, int font_size)
 {
     double x = rect->x, y = rect->y, w = rect->w, h = rect->h;
+    double corner_r = (w < 100.0 || h < 80.0) ? 10.0 : 14.0;
 
     /* Shadow */
     cairo_save(cr);
     cairo_set_source_rgba(cr, 0, 0, 0, pressed ? 0.05 : 0.15);
-    draw_rounded_rect(cr, x+3, y+3, w, h, 14);
+    draw_rounded_rect(cr, x+3, y+3, w, h, corner_r);
     cairo_fill(cr);
     cairo_restore(cr);
 
     /* Button fill */
     if (active)
-        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);  /* dark = locked */
+        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);
     else if (pressed)
         cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
     else
         cairo_set_source_rgb(cr, 0.88, 0.88, 0.88);
-    draw_rounded_rect(cr, x, y, w, h, 14);
+    draw_rounded_rect(cr, x, y, w, h, corner_r);
     cairo_fill(cr);
 
     /* Border */
@@ -224,13 +249,14 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     else
         cairo_set_source_rgb(cr, 0.4, 0.4, 0.4);
     cairo_set_line_width(cr, 2.0);
-    draw_rounded_rect(cr, x, y, w, h, 14);
+    draw_rounded_rect(cr, x, y, w, h, corner_r);
     cairo_stroke(cr);
 
     /* Label */
     PangoLayout *layout = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd =
-        pango_font_description_from_string("Sans Bold 26");
+    char font_desc[64];
+    snprintf(font_desc, sizeof(font_desc), "Sans Bold %d", font_size);
+    PangoFontDescription *fd = pango_font_description_from_string(font_desc);
     pango_layout_set_font_description(layout, fd);
     pango_font_description_free(fd);
     pango_layout_set_text(layout, label, -1);
@@ -249,13 +275,37 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     g_object_unref(layout);
 }
 
+/* Convenience wrapper using the standard (large) font size */
+static void draw_button(cairo_t *cr, const Rect *rect,
+                         const char *label, gboolean pressed,
+                         gboolean active)
+{
+    draw_button_sized(cr, rect, label, pressed, active, 26);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main draw routine                                                 */
+/* ------------------------------------------------------------------ */
 static void do_draw(cairo_t *cr, int draw_w, int draw_h)
 {
     /* White background */
     cairo_set_source_rgb(cr, 1, 1, 1);
     cairo_paint(cr);
 
-    /* Title */
+    /* ---- Lock button – small, top-right corner ---- */
+    double lock_sz  = 72.0;
+    double lock_mar = 16.0;
+    g_rect_lock.x = draw_w - lock_sz - lock_mar;
+    g_rect_lock.y = lock_mar;
+    g_rect_lock.w = lock_sz;
+    g_rect_lock.h = lock_sz;
+    const char *lock_label = g_locked
+        ? "\xf0\x9f\x94\x92"   /* UTF-8 🔒 */
+        : "\xf0\x9f\x94\x93";  /* UTF-8 🔓 */
+    draw_button_sized(cr, &g_rect_lock, lock_label,
+                      g_lock_pressed, g_locked, 22);
+
+    /* ---- Title ---- */
     {
         PangoLayout *layout = pango_cairo_create_layout(cr);
         PangoFontDescription *fd =
@@ -275,7 +325,7 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
         g_object_unref(layout);
     }
 
-    /* Subtitle */
+    /* ---- Subtitle ---- */
     {
         PangoLayout *layout = pango_cairo_create_layout(cr);
         PangoFontDescription *fd =
@@ -289,14 +339,49 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
 
         int tw, th;
         pango_layout_get_size(layout, &tw, &th);
-        double ty = draw_h * 0.32;
+        double ty = draw_h * 0.30;
         cairo_set_source_rgb(cr, 0.3, 0.3, 0.3);
         cairo_move_to(cr, 0, ty);
         pango_cairo_show_layout(cr, layout);
         g_object_unref(layout);
     }
 
-    /* Buttons – positioned in lower portion of drawing space */
+    /* ---- Shortcut buttons row ---- */
+    {
+        double sh_total = draw_w * 0.90;
+        double sh_gap   = 12.0;
+        double sh_h     = 90.0;
+        double sh_w     = (sh_total - (NUM_SHORTCUTS - 1) * sh_gap)
+                          / NUM_SHORTCUTS;
+        double sh_x0    = (draw_w - sh_total) / 2.0;
+        double sh_y     = draw_h * 0.50;
+
+        for (int i = 0; i < NUM_SHORTCUTS; i++) {
+            g_shortcuts[i].rect.x = sh_x0 + i * (sh_w + sh_gap);
+            g_shortcuts[i].rect.y = sh_y;
+            g_shortcuts[i].rect.w = sh_w;
+            g_shortcuts[i].rect.h = sh_h;
+            draw_button_sized(cr, &g_shortcuts[i].rect,
+                              g_shortcuts[i].label,
+                              g_shortcuts[i].pressed, FALSE, 20);
+        }
+
+        /* Small "Shortcuts" label above the row */
+        PangoLayout *layout = pango_cairo_create_layout(cr);
+        PangoFontDescription *fd =
+            pango_font_description_from_string("Sans 14");
+        pango_layout_set_font_description(layout, fd);
+        pango_font_description_free(fd);
+        pango_layout_set_text(layout, "Shortcuts", -1);
+        int tw, th;
+        pango_layout_get_size(layout, &tw, &th);
+        cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
+        cairo_move_to(cr, sh_x0, sh_y - th / PANGO_SCALE - 6);
+        pango_cairo_show_layout(cr, layout);
+        g_object_unref(layout);
+    }
+
+    /* ---- Main control buttons (bottom of screen) ---- */
     double btn_w  = draw_w * 0.72;
     double btn_h  = 110.0;
     double btn_x  = (draw_w - btn_w) / 2.0;
@@ -319,16 +404,6 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
         ? "Rotate \xe2\x86\xba Landscape"   /* UTF-8 ↺ */
         : "Rotate \xe2\x86\xba Portrait";
     draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed, FALSE);
-
-    /* Lock button (above rotate) */
-    g_rect_lock.x = btn_x;
-    g_rect_lock.y = g_rect_rotate.y - gap - btn_h;
-    g_rect_lock.w = btn_w;
-    g_rect_lock.h = btn_h;
-    const char *lock_label = g_locked
-        ? "\xf0\x9f\x94\x92 Unlock Input"   /* UTF-8 🔒 */
-        : "\xf0\x9f\x94\x93 Lock Input";     /* UTF-8 🔓 */
-    draw_button(cr, &g_rect_lock, lock_label, g_lock_pressed, g_locked);
 }
 
 static gboolean on_expose(GtkWidget *widget, GdkEventExpose *, gpointer)
@@ -367,15 +442,31 @@ static gboolean on_button_press(GtkWidget *widget, GdkEventButton *event,
     double dx, dy;
     screen_to_drawing(event->x, event->y, &dx, &dy, win_w, win_h);
 
+    /* Lock button is always tappable */
     if (rect_contains(&g_rect_lock, dx, dy)) {
         g_lock_pressed = TRUE;
         gtk_widget_queue_draw(widget);
-    } else if (!g_locked && rect_contains(&g_rect_rotate, dx, dy)) {
-        g_rotate_pressed = TRUE;
-        gtk_widget_queue_draw(widget);
-    } else if (!g_locked && rect_contains(&g_rect_exit, dx, dy)) {
-        g_exit_pressed = TRUE;
-        gtk_widget_queue_draw(widget);
+        return TRUE;
+    }
+
+    /* Shortcut buttons work regardless of lock state */
+    for (int i = 0; i < NUM_SHORTCUTS; i++) {
+        if (rect_contains(&g_shortcuts[i].rect, dx, dy)) {
+            g_shortcuts[i].pressed = TRUE;
+            gtk_widget_queue_draw(widget);
+            return TRUE;
+        }
+    }
+
+    /* Rotate / exit are blocked when locked */
+    if (!g_locked) {
+        if (rect_contains(&g_rect_rotate, dx, dy)) {
+            g_rotate_pressed = TRUE;
+            gtk_widget_queue_draw(widget);
+        } else if (rect_contains(&g_rect_exit, dx, dy)) {
+            g_exit_pressed = TRUE;
+            gtk_widget_queue_draw(widget);
+        }
     }
 
     return TRUE;
@@ -393,9 +484,10 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event,
     double dx, dy;
     screen_to_drawing(event->x, event->y, &dx, &dy, win_w, win_h);
 
-    gboolean do_rotate = FALSE;
-    gboolean do_exit   = FALSE;
-    gboolean do_lock   = FALSE;
+    gboolean do_rotate   = FALSE;
+    gboolean do_exit     = FALSE;
+    gboolean do_lock     = FALSE;
+    int      do_shortcut = -1;
 
     if (g_lock_pressed && rect_contains(&g_rect_lock, dx, dy))
         do_lock = TRUE;
@@ -403,10 +495,20 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event,
         do_rotate = TRUE;
     if (g_exit_pressed && rect_contains(&g_rect_exit, dx, dy))
         do_exit = TRUE;
+    for (int i = 0; i < NUM_SHORTCUTS; i++) {
+        if (g_shortcuts[i].pressed &&
+            rect_contains(&g_shortcuts[i].rect, dx, dy)) {
+            do_shortcut = g_shortcuts[i].id;
+            break;
+        }
+    }
 
+    /* Clear all pressed states */
     g_lock_pressed   = FALSE;
     g_rotate_pressed = FALSE;
     g_exit_pressed   = FALSE;
+    for (int i = 0; i < NUM_SHORTCUTS; i++)
+        g_shortcuts[i].pressed = FALSE;
     gtk_widget_queue_draw(widget);
 
     /* --- Actions --- */
@@ -429,6 +531,9 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event,
         unlink(g_marker_file);
         gtk_main_quit();
     }
+
+    if (do_shortcut >= 0)
+        write_shortcut(do_shortcut);
 
     return TRUE;
 }
