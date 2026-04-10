@@ -1,0 +1,104 @@
+name: Build Kindle Tablet Binaries
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      TARGET: kindlehf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            build-essential autoconf automake bison flex gawk \
+            libtool libtool-bin libncurses-dev \
+            curl file git gperf help2man texinfo unzip wget \
+            libarchive-dev nettle-dev \
+            meson libgtk2.0-dev libxrandr-dev \
+            pkg-config python3
+
+      # ── Cache the cross-compilation toolchain ───────────────────────────────
+      # koxtoolchain (cross-compiler) + kindle-sdk (Kindle sysroot) live in
+      # ~/x-tools. Building them from scratch takes ~30 min; we restore from
+      # cache on every subsequent run. Key is the Dockerfile hash because that
+      # is what encodes the toolchain versions and build steps.
+      - name: Restore cached cross-compilation toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/x-tools
+          key: kindle-toolchain-${{ hashFiles('kindle/Dockerfile') }}
+          restore-keys: |
+            kindle-toolchain-
+
+      - name: Build koxtoolchain (cross-compiler)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive --depth=1 \
+            https://github.com/koreader/koxtoolchain.git /tmp/koxtoolchain
+          cd /tmp/koxtoolchain
+          chmod +x ./gen-tc.sh
+          ./gen-tc.sh $TARGET
+
+      - name: Build kindle-sdk (Kindle sysroot)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive --depth=1 \
+            https://github.com/KindleModding/kindle-sdk.git /tmp/kindle-sdk
+          cd /tmp/kindle-sdk
+          export PATH="$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/bin:$PATH"
+          chmod +x ./gen-sdk.sh
+          ./gen-sdk.sh $TARGET
+
+      - name: Copy XRandR headers into sysroot
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          SYSROOT="$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/arm-${TARGET}-linux-gnueabihf/sysroot"
+          sudo mkdir -p "$SYSROOT/usr/include/X11/extensions"
+          sudo cp /usr/include/X11/extensions/Xrandr.h "$SYSROOT/usr/include/X11/extensions/"
+          sudo cp /usr/include/X11/extensions/randr.h  "$SYSROOT/usr/include/X11/extensions/"
+
+      # ── Expose toolchain to subsequent steps ────────────────────────────────
+      - name: Set cross-compilation env vars
+        run: |
+          echo "MESON_CROSS=$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/meson-crosscompile.txt" >> $GITHUB_ENV
+          echo "$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/bin" >> $GITHUB_PATH
+
+      # ── Compile the binaries ─────────────────────────────────────────────────
+      - name: Create output directory
+        run: mkdir -p kindle/bin
+
+      - name: Build tablet-daemon
+        run: |
+          cd kindle/tablet-daemon
+          rm -rf builddir_kindle
+          meson setup --cross-file "$MESON_CROSS" builddir_kindle
+          meson compile -C builddir_kindle
+          cp builddir_kindle/tablet-daemon ../bin/tablet-daemon
+
+      - name: Build tablet-gtk-ui
+        run: |
+          cd kindle/gtk-ui
+          rm -rf builddir_kindle
+          meson setup --cross-file "$MESON_CROSS" builddir_kindle
+          meson compile -C builddir_kindle
+          cp builddir_kindle/tablet-ui ../bin/tablet-ui
+
+      # ── Upload artifacts ─────────────────────────────────────────────────────
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-binaries-${{ github.sha }}
+          path: |
+            kindle/bin/tablet-daemon
+            kindle/bin/tablet-ui
