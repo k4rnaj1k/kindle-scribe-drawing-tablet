@@ -94,6 +94,13 @@ _cg.CGEventCreateScrollWheelEvent.restype  = ctypes.c_void_p
 _cg.CGEventCreateScrollWheelEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
                                                ctypes.c_uint32, ctypes.c_int32,
                                                ctypes.c_int32]
+# CGEventCreateKeyboardEvent
+_cg.CGEventCreateKeyboardEvent.restype  = ctypes.c_void_p
+_cg.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                            ctypes.c_bool]
+# CGEventSetFlags
+_cg.CGEventSetFlags.restype  = None
+_cg.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
 # Display info
 from Quartz import CGMainDisplayID, CGDisplayPixelsWide, CGDisplayPixelsHigh
 
@@ -161,6 +168,17 @@ _F_PROX_ENTER              = 38   # kCGTabletProximityEventEnterProximity
 _SUBTYPE_DEFAULT            = 0
 _SUBTYPE_TABLET_POINT       = 1
 _SUBTYPE_TABLET_PROXIMITY   = 2
+
+# Virtual key codes (from Carbon HIToolbox/Events.h)
+_kVK_ANSI_S            = 0x01
+_kVK_ANSI_Z            = 0x06
+_kVK_ANSI_Y            = 0x10   # not standard for redo on macOS, but some apps use it
+_kVK_ANSI_LeftBracket  = 0x21   # [
+_kVK_ANSI_RightBracket = 0x1E   # ]
+
+# CGEventFlags modifier masks
+_kCGEventFlagMaskCommand = 0x00100000   # 1 << 20
+_kCGEventFlagMaskShift   = 0x00020000   # 1 << 17
 
 # NSPointingDeviceType (what Qt reads to determine pen vs eraser)
 _NS_PEN_POINTING_DEVICE     = 1
@@ -361,3 +379,42 @@ class MacOSInput:
             ctypes.c_int32(dy), ctypes.c_int32(dx)
         )
         self._post(ev)
+
+    # -- Keyboard shortcuts ----------------------------------------------------
+
+    def _send_key(self, keycode: int, flags: int = 0) -> None:
+        """Post a key-down + key-up pair with optional modifier flags."""
+        for down in (True, False):
+            ev = _cg.CGEventCreateKeyboardEvent(self._src, keycode, down)
+            if ev:
+                if flags:
+                    _cg.CGEventSetFlags(ev, flags)
+                _cg.CGEventPost(_kCGHIDEventTap, ev)
+                _cg.CFRelease(ev)
+
+    def send_shortcut(self, shortcut_id: int) -> None:
+        """Inject a keyboard shortcut on macOS for the given shortcut_id.
+
+        Shortcut IDs (from events.py):
+          1 = Undo          Cmd+Z
+          2 = Redo          Cmd+Shift+Z
+          3 = Brush smaller [
+          4 = Brush bigger  ]
+          5 = Save          Cmd+S
+        """
+        from .events import (SHORTCUT_UNDO, SHORTCUT_REDO,
+                             SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER,
+                             SHORTCUT_SAVE)
+        if shortcut_id == SHORTCUT_UNDO:
+            self._send_key(_kVK_ANSI_Z, _kCGEventFlagMaskCommand)
+        elif shortcut_id == SHORTCUT_REDO:
+            self._send_key(_kVK_ANSI_Z,
+                           _kCGEventFlagMaskCommand | _kCGEventFlagMaskShift)
+        elif shortcut_id == SHORTCUT_BRUSH_SMALLER:
+            self._send_key(_kVK_ANSI_LeftBracket)
+        elif shortcut_id == SHORTCUT_BRUSH_BIGGER:
+            self._send_key(_kVK_ANSI_RightBracket)
+        elif shortcut_id == SHORTCUT_SAVE:
+            self._send_key(_kVK_ANSI_S, _kCGEventFlagMaskCommand)
+        else:
+            log.warning("send_shortcut: unknown shortcut_id %d", shortcut_id)

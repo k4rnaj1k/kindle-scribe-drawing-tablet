@@ -26,6 +26,33 @@ if sys.platform != "win32":
 else:
     user32 = ctypes.windll.user32
 
+    # ---------- SendInput structures (keyboard) ----------
+    _INPUT_KEYBOARD  = 1
+    _KEYEVENTF_KEYUP = 0x0002
+
+    # Virtual-key codes
+    _VK_Z     = 0x5A
+    _VK_S     = 0x53
+    _VK_OEM_4 = 0xDB   # [ on US layout
+    _VK_OEM_6 = 0xDD   # ] on US layout
+    _VK_SHIFT = 0x10
+    _VK_CONTROL = 0x11
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk",         ctypes.wintypes.WORD),
+            ("wScan",       ctypes.wintypes.WORD),
+            ("dwFlags",     ctypes.wintypes.DWORD),
+            ("time",        ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT), ("_pad", ctypes.c_byte * 28)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.wintypes.DWORD), ("_input", _INPUT_UNION)]
+
     # Bit positions from C# BitPositions enum
     class BitPositions:
         Press = 0
@@ -160,3 +187,49 @@ else:
         def scroll(self, dx: int, dy: int) -> None:
             """Scroll fallback (Not supported via VMulti InkReport)."""
             pass
+
+        # -- Keyboard shortcuts ------------------------------------------------
+
+        def _send_key_combo(self, vk: int, ctrl: bool = False,
+                            shift: bool = False) -> None:
+            """Press modifier(s) + vk, then release in reverse order."""
+            seq = []
+            if ctrl:
+                seq.append(_VK_CONTROL)
+            if shift:
+                seq.append(_VK_SHIFT)
+            seq.append(vk)
+
+            # Build key-down + key-up sequence
+            events = [(k, False) for k in seq] + [(k, True) for k in reversed(seq)]
+            inputs = (_INPUT * len(events))()
+            for i, (key, up) in enumerate(events):
+                inputs[i].type = _INPUT_KEYBOARD
+                inputs[i]._input.ki.wVk = key
+                inputs[i]._input.ki.dwFlags = _KEYEVENTF_KEYUP if up else 0
+
+            user32.SendInput(len(events), inputs, ctypes.sizeof(_INPUT))
+
+        def send_shortcut(self, shortcut_id: int) -> None:
+            """Inject a keyboard shortcut on Windows for the given shortcut_id.
+
+            Shortcut IDs (from events.py):
+              1 = Undo          Ctrl+Z
+              2 = Redo          Ctrl+Y
+              3 = Brush smaller [
+              4 = Brush bigger  ]
+              5 = Save          Ctrl+S
+            """
+            from .events import (SHORTCUT_UNDO, SHORTCUT_REDO,
+                                 SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER,
+                                 SHORTCUT_SAVE)
+            if shortcut_id == SHORTCUT_UNDO:
+                self._send_key_combo(_VK_Z, ctrl=True)
+            elif shortcut_id == SHORTCUT_REDO:
+                self._send_key_combo(_VK_Z, ctrl=True, shift=True)
+            elif shortcut_id == SHORTCUT_BRUSH_SMALLER:
+                self._send_key_combo(_VK_OEM_4)
+            elif shortcut_id == SHORTCUT_BRUSH_BIGGER:
+                self._send_key_combo(_VK_OEM_6)
+            elif shortcut_id == SHORTCUT_SAVE:
+                self._send_key_combo(_VK_S, ctrl=True)

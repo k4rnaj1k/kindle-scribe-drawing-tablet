@@ -62,8 +62,18 @@ class SynCode(IntEnum):
 EV_CONTROL = 0xFF
 
 class ControlCode(IntEnum):
-    CTRL_ROTATION = 0x01
+    CTRL_ROTATION   = 0x01
     CTRL_DISCONNECT = 0x02
+    CTRL_SHORTCUT   = 0x03   # value = one of the SHORTCUT_* constants below
+
+
+# Shortcut IDs (sent as CTRL_SHORTCUT value from the Kindle UI and forwarded
+# to the platform input backend's send_shortcut() method).
+SHORTCUT_UNDO          = 1   # Ctrl+Z  / Cmd+Z
+SHORTCUT_REDO          = 2   # Ctrl+Y  / Cmd+Shift+Z
+SHORTCUT_BRUSH_SMALLER = 3   # [
+SHORTCUT_BRUSH_BIGGER  = 4   # ]
+SHORTCUT_SAVE          = 5   # Ctrl+S  / Cmd+S
 
 
 @dataclass

@@ -23,7 +23,8 @@ gc.disable()
 
 from .config import Config, KindleConfig, TabletConfig
 from .connector import KindleConnector
-from .events import ControlCode, PenState
+from .events import ControlCode, PenState, SHORTCUT_UNDO, SHORTCUT_REDO, \
+    SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER, SHORTCUT_SAVE
 
 log = logging.getLogger("kindle_tablet")
 
@@ -220,7 +221,7 @@ class TabletHandler:
             self.backend.move(x, y, pressure, tilt_x, tilt_y, eraser)
 
     def on_control(self, code: int, value: int) -> None:
-        """Handle a control message (rotation change from tablet-ui)."""
+        """Handle a control message (rotation change, shortcut, etc.) from tablet-ui."""
         if code == ControlCode.CTRL_ROTATION:
             self._rotation = value
             tc = self.config.tablet
@@ -237,6 +238,20 @@ class TabletHandler:
                 log.info("Rotation: portrait (effective %dx%d)",
                          tc.kindle_max_x, tc.kindle_max_y)
             self._compute_mapping()
+        elif code == ControlCode.CTRL_SHORTCUT:
+            shortcut_names = {
+                SHORTCUT_UNDO:          "Undo",
+                SHORTCUT_REDO:          "Redo",
+                SHORTCUT_BRUSH_SMALLER: "Brush smaller",
+                SHORTCUT_BRUSH_BIGGER:  "Brush bigger",
+                SHORTCUT_SAVE:          "Save",
+            }
+            log.info("Shortcut: %s (%d)",
+                     shortcut_names.get(value, "unknown"), value)
+            if hasattr(self.backend, "send_shortcut"):
+                self.backend.send_shortcut(value)
+            else:
+                log.warning("Backend does not support send_shortcut()")
         elif code == ControlCode.CTRL_DISCONNECT:
             log.info("Tablet daemon disconnected")
 
