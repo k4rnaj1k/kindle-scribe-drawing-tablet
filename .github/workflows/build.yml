@@ -38,6 +38,8 @@ jobs:
         with:
           path: ~/x-tools
           key: kindle-toolchain-${{ hashFiles('kindle/Dockerfile') }}
+          restore-keys: |
+            kindle-toolchain-
 
       - name: Build koxtoolchain (cross-compiler)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
