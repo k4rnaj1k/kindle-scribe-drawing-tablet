@@ -24,7 +24,7 @@ gc.disable()
 from .config import Config, KindleConfig, TabletConfig
 from .connector import KindleConnector
 from .events import ControlCode, PenState, SHORTCUT_UNDO, SHORTCUT_REDO, \
-    SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER, SHORTCUT_SAVE
+    SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER, SHORTCUT_SAVE, SHORTCUT_SLASH
 
 log = logging.getLogger("kindle_tablet")
 
@@ -245,6 +245,7 @@ class TabletHandler:
                 SHORTCUT_BRUSH_SMALLER: "Brush smaller",
                 SHORTCUT_BRUSH_BIGGER:  "Brush bigger",
                 SHORTCUT_SAVE:          "Save",
+                SHORTCUT_SLASH:         "Slash (/)",
             }
             log.info("Shortcut: %s (%d)",
                      shortcut_names.get(value, "unknown"), value)

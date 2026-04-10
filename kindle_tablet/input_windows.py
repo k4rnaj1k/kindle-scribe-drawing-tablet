@@ -35,6 +35,7 @@ else:
     _VK_S     = 0x53
     _VK_OEM_4 = 0xDB   # [ on US layout
     _VK_OEM_6 = 0xDD   # ] on US layout
+    _VK_OEM_2 = 0xBF   # / on US layout
     _VK_SHIFT = 0x10
     _VK_CONTROL = 0x11
 
@@ -219,10 +220,11 @@ else:
               3 = Brush smaller [
               4 = Brush bigger  ]
               5 = Save          Ctrl+S
+              6 = Slash         /
             """
             from .events import (SHORTCUT_UNDO, SHORTCUT_REDO,
                                  SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER,
-                                 SHORTCUT_SAVE)
+                                 SHORTCUT_SAVE, SHORTCUT_SLASH)
             if shortcut_id == SHORTCUT_UNDO:
                 self._send_key_combo(_VK_Z, ctrl=True)
             elif shortcut_id == SHORTCUT_REDO:
@@ -233,3 +235,5 @@ else:
                 self._send_key_combo(_VK_OEM_6)
             elif shortcut_id == SHORTCUT_SAVE:
                 self._send_key_combo(_VK_S, ctrl=True)
+            elif shortcut_id == SHORTCUT_SLASH:
+                self._send_key_combo(_VK_OEM_2)

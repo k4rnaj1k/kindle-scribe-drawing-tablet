@@ -121,6 +121,7 @@ static void *pen_monitor_thread(void *)
 #define SHORTCUT_BRUSH_SMALLER 3
 #define SHORTCUT_BRUSH_BIGGER  4
 #define SHORTCUT_SAVE          5
+#define SHORTCUT_SLASH         6
 
 static void write_shortcut(int id)
 {
@@ -145,7 +146,7 @@ static gboolean g_exit_pressed    = FALSE;
 static gboolean g_lock_pressed    = FALSE;
 
 /* Programmable shortcut buttons */
-#define NUM_SHORTCUTS 5
+#define NUM_SHORTCUTS 6
 
 typedef struct {
     Rect     rect;
@@ -160,6 +161,7 @@ static ShortcutButton g_shortcuts[NUM_SHORTCUTS] = {
     { {0,0,0,0}, FALSE, "[",    SHORTCUT_BRUSH_SMALLER },
     { {0,0,0,0}, FALSE, "]",    SHORTCUT_BRUSH_BIGGER  },
     { {0,0,0,0}, FALSE, "Save", SHORTCUT_SAVE          },
+    { {0,0,0,0}, FALSE, "/",    SHORTCUT_SLASH         },
 };
 
 static gboolean rect_contains(const Rect *r, double x, double y)
@@ -305,7 +307,7 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     cairo_restore(cr);
 
     if (locked)
-        cairo_set_source_rgb(cr, 0.14, 0.58, 0.14);  /* green when locked */
+        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);  /* dark grey when locked */
     else if (pressed)
         cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
     else
@@ -314,7 +316,7 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     cairo_fill(cr);
 
     if (locked)
-        cairo_set_source_rgb(cr, 0.05, 0.38, 0.05);  /* dark green border */
+        cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);     /* dark border when locked */
     else
         cairo_set_source_rgb(cr, 0.4, 0.4, 0.4);
     cairo_set_line_width(cr, 2.0);
@@ -362,7 +364,7 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     cairo_fill(cr);
     /* notch below the circle – punched out in the button's fill colour */
     if (locked)
-        cairo_set_source_rgb(cr, 0.14, 0.58, 0.14);  /* match green fill */
+        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);  /* match dark grey fill */
     else if (pressed)
         cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
     else

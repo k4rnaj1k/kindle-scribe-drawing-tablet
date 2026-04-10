@@ -74,6 +74,7 @@ SHORTCUT_REDO          = 2   # Ctrl+Y  / Cmd+Shift+Z
 SHORTCUT_BRUSH_SMALLER = 3   # [
 SHORTCUT_BRUSH_BIGGER  = 4   # ]
 SHORTCUT_SAVE          = 5   # Ctrl+S  / Cmd+S
+SHORTCUT_SLASH         = 6   # /  (brush cycle / user-defined)
 
 
 @dataclass
