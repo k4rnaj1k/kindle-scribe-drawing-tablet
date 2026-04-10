@@ -77,6 +77,7 @@ jobs:
       - name: Build tablet-daemon
         run: |
           docker run --rm \
+            -u root \
             -v "${{ github.workspace }}/kindle":/src \
             kindle-build \
             sh -c "
@@ -91,6 +92,7 @@ jobs:
       - name: Build tablet-gtk-ui
         run: |
           docker run --rm \
+            -u root \
             -v "${{ github.workspace }}/kindle":/src \
             kindle-build \
             sh -c "
