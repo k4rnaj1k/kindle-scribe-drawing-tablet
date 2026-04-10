@@ -283,6 +283,89 @@ static void draw_button(cairo_t *cr, const Rect *rect,
     draw_button_sized(cr, rect, label, pressed, active, 26);
 }
 
+/*
+ * draw_lock_button – draws the small top-right lock button using a
+ * Cairo-rendered padlock icon instead of emoji (emoji codepoints above
+ * U+FFFF render as raw numbers on the Kindle's old Pango/font stack).
+ *
+ * Locked:   closed shackle, both legs inside body.
+ * Unlocked: open shackle, right leg lifted clear of body.
+ */
+static void draw_lock_button(cairo_t *cr, const Rect *rect,
+                              gboolean pressed, gboolean locked)
+{
+    double x = rect->x, y = rect->y, w = rect->w, h = rect->h;
+    double cx = x + w / 2.0;
+
+    /* --- button background (same logic as draw_button_sized) --- */
+    cairo_save(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, pressed ? 0.05 : 0.15);
+    draw_rounded_rect(cr, x+3, y+3, w, h, 10.0);
+    cairo_fill(cr);
+    cairo_restore(cr);
+
+    if (locked)
+        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);
+    else if (pressed)
+        cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
+    else
+        cairo_set_source_rgb(cr, 0.88, 0.88, 0.88);
+    draw_rounded_rect(cr, x, y, w, h, 10.0);
+    cairo_fill(cr);
+
+    cairo_set_source_rgb(cr, locked ? 0.1 : 0.4,
+                             locked ? 0.1 : 0.4,
+                             locked ? 0.1 : 0.4);
+    cairo_set_line_width(cr, 2.0);
+    draw_rounded_rect(cr, x, y, w, h, 10.0);
+    cairo_stroke(cr);
+
+    /* --- padlock icon --- */
+    double icon_color = locked ? 0.92 : 0.15;
+    cairo_set_source_rgb(cr, icon_color, icon_color, icon_color);
+
+    /* Body: rounded rect in the lower ~55% of the button */
+    double bw = w * 0.52;
+    double bh = h * 0.40;
+    double bx = cx - bw / 2.0;
+    double by = y + h * 0.50;
+    double br = bw * 0.13;
+    draw_rounded_rect(cr, bx, by, bw, bh, br);
+    cairo_fill(cr);
+
+    /* Shackle: U-arc above body */
+    double sr     = bw * 0.28;          /* outer radius of shackle arc */
+    double thick  = w * 0.095;          /* stroke width */
+    double leg_y  = by + thick * 0.3;   /* where legs disappear into body */
+    double arc_cy = by - sr * 0.05;     /* vertical centre of the arc */
+
+    cairo_set_line_width(cr, thick);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+
+    cairo_move_to(cr, cx - sr, leg_y);
+    cairo_line_to(cr, cx - sr, arc_cy);
+    cairo_arc(cr, cx, arc_cy, sr, M_PI, 0);   /* semicircle */
+    if (locked) {
+        cairo_line_to(cr, cx + sr, leg_y);     /* right leg down into body */
+    } else {
+        /* right leg lifted ~40% of shackle diameter above body */
+        cairo_line_to(cr, cx + sr, by - sr * 0.85);
+    }
+    cairo_stroke(cr);
+
+    /* Keyhole: filled circle + small notch (only drawn on body area) */
+    double kx = cx;
+    double ky = by + bh * 0.38;
+    double kr = w * 0.055;
+    cairo_arc(cr, kx, ky, kr, 0, 2 * M_PI);
+    cairo_fill(cr);
+    /* notch below the circle – punched out in the button's fill colour */
+    double bg_col = locked ? 0.25 : (pressed ? 0.65 : 0.88);
+    cairo_set_source_rgb(cr, bg_col, bg_col, bg_col);
+    cairo_rectangle(cr, kx - kr * 0.55, ky, kr * 1.1, kr * 1.3);
+    cairo_fill(cr);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main draw routine                                                 */
 /* ------------------------------------------------------------------ */
@@ -299,11 +382,7 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     g_rect_lock.y = lock_mar;
     g_rect_lock.w = lock_sz;
     g_rect_lock.h = lock_sz;
-    const char *lock_label = g_locked
-        ? "\xf0\x9f\x94\x92"   /* UTF-8 🔒 */
-        : "\xf0\x9f\x94\x93";  /* UTF-8 🔓 */
-    draw_button_sized(cr, &g_rect_lock, lock_label,
-                      g_lock_pressed, g_locked, 22);
+    draw_lock_button(cr, &g_rect_lock, g_lock_pressed, g_locked);
 
     /* ---- Title ---- */
     {
