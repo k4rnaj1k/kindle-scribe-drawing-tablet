@@ -155,11 +155,11 @@ typedef struct {
 } ShortcutButton;
 
 static ShortcutButton g_shortcuts[NUM_SHORTCUTS] = {
-    { {0,0,0,0}, FALSE, "Undo",  SHORTCUT_UNDO          },
-    { {0,0,0,0}, FALSE, "Redo",  SHORTCUT_REDO          },
-    { {0,0,0,0}, FALSE, "[ Brsh",SHORTCUT_BRUSH_SMALLER },
-    { {0,0,0,0}, FALSE, "] Brsh",SHORTCUT_BRUSH_BIGGER  },
-    { {0,0,0,0}, FALSE, "Save",  SHORTCUT_SAVE          },
+    { {0,0,0,0}, FALSE, "Undo", SHORTCUT_UNDO          },
+    { {0,0,0,0}, FALSE, "Redo", SHORTCUT_REDO          },
+    { {0,0,0,0}, FALSE, "[",    SHORTCUT_BRUSH_SMALLER },
+    { {0,0,0,0}, FALSE, "]",    SHORTCUT_BRUSH_BIGGER  },
+    { {0,0,0,0}, FALSE, "Save", SHORTCUT_SAVE          },
 };
 
 static gboolean rect_contains(const Rect *r, double x, double y)
@@ -305,7 +305,7 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     cairo_restore(cr);
 
     if (locked)
-        cairo_set_source_rgb(cr, 0.25, 0.25, 0.25);
+        cairo_set_source_rgb(cr, 0.14, 0.58, 0.14);  /* green when locked */
     else if (pressed)
         cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
     else
@@ -313,15 +313,16 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     draw_rounded_rect(cr, x, y, w, h, 10.0);
     cairo_fill(cr);
 
-    cairo_set_source_rgb(cr, locked ? 0.1 : 0.4,
-                             locked ? 0.1 : 0.4,
-                             locked ? 0.1 : 0.4);
+    if (locked)
+        cairo_set_source_rgb(cr, 0.05, 0.38, 0.05);  /* dark green border */
+    else
+        cairo_set_source_rgb(cr, 0.4, 0.4, 0.4);
     cairo_set_line_width(cr, 2.0);
     draw_rounded_rect(cr, x, y, w, h, 10.0);
     cairo_stroke(cr);
 
     /* --- padlock icon --- */
-    double icon_color = locked ? 0.92 : 0.15;
+    double icon_color = locked ? 0.95 : 0.15;
     cairo_set_source_rgb(cr, icon_color, icon_color, icon_color);
 
     /* Body: rounded rect in the lower ~55% of the button */
@@ -360,8 +361,12 @@ static void draw_lock_button(cairo_t *cr, const Rect *rect,
     cairo_arc(cr, kx, ky, kr, 0, 2 * M_PI);
     cairo_fill(cr);
     /* notch below the circle – punched out in the button's fill colour */
-    double bg_col = locked ? 0.25 : (pressed ? 0.65 : 0.88);
-    cairo_set_source_rgb(cr, bg_col, bg_col, bg_col);
+    if (locked)
+        cairo_set_source_rgb(cr, 0.14, 0.58, 0.14);  /* match green fill */
+    else if (pressed)
+        cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
+    else
+        cairo_set_source_rgb(cr, 0.88, 0.88, 0.88);
     cairo_rectangle(cr, kx - kr * 0.55, ky, kr * 1.1, kr * 1.3);
     cairo_fill(cr);
 }
@@ -375,14 +380,34 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     cairo_set_source_rgb(cr, 1, 1, 1);
     cairo_paint(cr);
 
-    /* ---- Lock button – small, top-right corner ---- */
-    double lock_sz  = 72.0;
-    double lock_mar = 16.0;
-    g_rect_lock.x = draw_w - lock_sz - lock_mar;
-    g_rect_lock.y = lock_mar;
-    g_rect_lock.w = lock_sz;
-    g_rect_lock.h = lock_sz;
+    /* ---- Top bar: shortcut buttons (left) + lock button (right) ---- *
+     *                                                                  *
+     *  [Undo][Redo][ ][ ][Save]                          [LOCK]        *
+     *                                                                  */
+    double top_sz  = 64.0;   /* square button size */
+    double top_mar = 16.0;   /* screen edge margin  */
+    double top_gap = 10.0;   /* gap between buttons */
+    double top_y   = top_mar;
+
+    /* Lock button – far right */
+    g_rect_lock.x = draw_w - top_sz - top_mar;
+    g_rect_lock.y = top_y;
+    g_rect_lock.w = top_sz;
+    g_rect_lock.h = top_sz;
     draw_lock_button(cr, &g_rect_lock, g_lock_pressed, g_locked);
+
+    /* Shortcut buttons – left-aligned */
+    for (int i = 0; i < NUM_SHORTCUTS; i++) {
+        g_shortcuts[i].rect.x = top_mar + i * (top_sz + top_gap);
+        g_shortcuts[i].rect.y = top_y;
+        g_shortcuts[i].rect.w = top_sz;
+        g_shortcuts[i].rect.h = top_sz;
+        /* font size: larger for single-char labels like [ and ] */
+        int fsz = (g_shortcuts[i].label[1] == '\0') ? 26 : 18;
+        draw_button_sized(cr, &g_shortcuts[i].rect,
+                          g_shortcuts[i].label,
+                          g_shortcuts[i].pressed, FALSE, fsz);
+    }
 
     /* ---- Title ---- */
     {
@@ -421,41 +446,6 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
         double ty = draw_h * 0.30;
         cairo_set_source_rgb(cr, 0.3, 0.3, 0.3);
         cairo_move_to(cr, 0, ty);
-        pango_cairo_show_layout(cr, layout);
-        g_object_unref(layout);
-    }
-
-    /* ---- Shortcut buttons row ---- */
-    {
-        double sh_total = draw_w * 0.90;
-        double sh_gap   = 12.0;
-        double sh_h     = 90.0;
-        double sh_w     = (sh_total - (NUM_SHORTCUTS - 1) * sh_gap)
-                          / NUM_SHORTCUTS;
-        double sh_x0    = (draw_w - sh_total) / 2.0;
-        double sh_y     = draw_h * 0.50;
-
-        for (int i = 0; i < NUM_SHORTCUTS; i++) {
-            g_shortcuts[i].rect.x = sh_x0 + i * (sh_w + sh_gap);
-            g_shortcuts[i].rect.y = sh_y;
-            g_shortcuts[i].rect.w = sh_w;
-            g_shortcuts[i].rect.h = sh_h;
-            draw_button_sized(cr, &g_shortcuts[i].rect,
-                              g_shortcuts[i].label,
-                              g_shortcuts[i].pressed, FALSE, 20);
-        }
-
-        /* Small "Shortcuts" label above the row */
-        PangoLayout *layout = pango_cairo_create_layout(cr);
-        PangoFontDescription *fd =
-            pango_font_description_from_string("Sans 14");
-        pango_layout_set_font_description(layout, fd);
-        pango_font_description_free(fd);
-        pango_layout_set_text(layout, "Shortcuts", -1);
-        int tw, th;
-        pango_layout_get_size(layout, &tw, &th);
-        cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
-        cairo_move_to(cr, sh_x0, sh_y - th / PANGO_SCALE - 6);
         pango_cairo_show_layout(cr, layout);
         g_object_unref(layout);
     }
