@@ -9,100 +9,88 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      TARGET: kindlehf
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Layer 1: Cache the heavy SDK image ──────────────────────────────────
-      # Building the cross-compilation toolchain (koxtoolchain + kindle-sdk)
-      # takes ~30 min and requires --privileged. We export the committed Docker
-      # image as a compressed tar and restore it on subsequent runs.
-      # Cache key is the Dockerfile hash so it rebuilds only when deps change.
-      - name: Restore cached kindle-sdk-final image
-        id: cache-sdk
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            build-essential autoconf automake bison flex gawk \
+            libtool libtool-bin libncurses-dev \
+            curl file git gperf help2man texinfo unzip wget \
+            libarchive-dev nettle-dev \
+            meson libgtk2.0-dev libxrandr-dev \
+            pkg-config python3
+
+      # ── Cache the cross-compilation toolchain ───────────────────────────────
+      # koxtoolchain (cross-compiler) + kindle-sdk (Kindle sysroot) live in
+      # ~/x-tools. Building them from scratch takes ~30 min; we restore from
+      # cache on every subsequent run. Key is the Dockerfile hash because that
+      # is what encodes the toolchain versions and build steps.
+      - name: Restore cached cross-compilation toolchain
+        id: cache-toolchain
         uses: actions/cache@v4
         with:
-          path: /tmp/kindle-sdk-final.tar.gz
-          key: kindle-sdk-final-${{ hashFiles('kindle/Dockerfile') }}
+          path: ~/x-tools
+          key: kindle-toolchain-${{ hashFiles('kindle/Dockerfile') }}
 
-      - name: Load SDK image from cache
-        if: steps.cache-sdk.outputs.cache-hit == 'true'
+      - name: Build koxtoolchain (cross-compiler)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          echo "Cache hit – loading kindle-sdk-final from archive…"
-          docker load -i /tmp/kindle-sdk-final.tar.gz
+          git clone --recursive --depth=1 \
+            https://github.com/koreader/koxtoolchain.git /tmp/koxtoolchain
+          cd /tmp/koxtoolchain
+          chmod +x ./gen-tc.sh
+          ./gen-tc.sh $TARGET
 
-      # ── Cache miss: build the SDK from scratch ──────────────────────────────
-      # Step 1 – build the toolchain stage (crosstool-NG, no mount needed).
-      # Step 2 – run gen-sdk.sh in a --privileged container (needs loopback mounts).
-      # Step 3 – commit the container as kindle-sdk-final.
-      - name: Build toolchain Docker stage
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
+      - name: Build kindle-sdk (Kindle sysroot)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          docker build \
-            --target toolchain \
-            -t kindle-toolchain \
-            kindle/
+          git clone --recursive --depth=1 \
+            https://github.com/KindleModding/kindle-sdk.git /tmp/kindle-sdk
+          cd /tmp/kindle-sdk
+          export PATH="$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/bin:$PATH"
+          chmod +x ./gen-sdk.sh
+          ./gen-sdk.sh $TARGET
 
-      - name: Run gen-sdk.sh (requires --privileged)
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
+      - name: Copy XRandR headers into sysroot
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          docker rm -f sdk-builder 2>/dev/null || true
-          docker run --privileged --name sdk-builder -u builder kindle-toolchain \
-            /bin/sh -c "cd ~/kindle-sdk && ./gen-sdk.sh kindlehf"
-          docker commit sdk-builder kindle-sdk-final
-          docker rm sdk-builder
+          SYSROOT="$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/arm-${TARGET}-linux-gnueabihf/sysroot"
+          mkdir -p "$SYSROOT/usr/include/X11/extensions"
+          cp /usr/include/X11/extensions/Xrandr.h "$SYSROOT/usr/include/X11/extensions/"
+          cp /usr/include/X11/extensions/randr.h  "$SYSROOT/usr/include/X11/extensions/"
 
-      - name: Save SDK image to cache
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
+      # ── Expose toolchain to subsequent steps ────────────────────────────────
+      - name: Set cross-compilation env vars
         run: |
-          echo "Compressing kindle-sdk-final image…"
-          docker save kindle-sdk-final | gzip > /tmp/kindle-sdk-final.tar.gz
+          echo "MESON_CROSS=$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/meson-crosscompile.txt" >> $GITHUB_ENV
+          echo "$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/bin" >> $GITHUB_PATH
 
-      # ── Layer 2: Build the thin wrapper image ───────────────────────────────
-      # Dockerfile.fix adds MESON_CROSS + PATH env vars on top of the committed
-      # image. This is always rebuilt (it's just two ENV lines, essentially free).
-      - name: Build kindle-build image (apply env fixes from Dockerfile.fix)
-        run: |
-          docker build \
-            -t kindle-build \
-            -f kindle/Dockerfile.fix \
-            kindle/
-
-      # ── Layer 3: Compile the binaries ───────────────────────────────────────
-      # Source is mounted read-write so the compiled binaries can be copied out.
-      # Each build dir is wiped first so stale Meson state can't cause failures.
+      # ── Compile the binaries ─────────────────────────────────────────────────
       - name: Create output directory
         run: mkdir -p kindle/bin
 
       - name: Build tablet-daemon
         run: |
-          docker run --rm \
-            -u root \
-            -v "${{ github.workspace }}/kindle":/src \
-            kindle-build \
-            sh -c "
-              set -e
-              cd /src/tablet-daemon
-              rm -rf builddir_kindle
-              meson setup --cross-file \$MESON_CROSS builddir_kindle
-              meson compile -C builddir_kindle
-              cp builddir_kindle/tablet-daemon /src/bin/tablet-daemon
-            "
+          cd kindle/tablet-daemon
+          rm -rf builddir_kindle
+          meson setup --cross-file "$MESON_CROSS" builddir_kindle
+          meson compile -C builddir_kindle
+          cp builddir_kindle/tablet-daemon ../bin/tablet-daemon
 
       - name: Build tablet-gtk-ui
         run: |
-          docker run --rm \
-            -u root \
-            -v "${{ github.workspace }}/kindle":/src \
-            kindle-build \
-            sh -c "
-              set -e
-              cd /src/gtk-ui
-              rm -rf builddir_kindle
-              meson setup --cross-file \$MESON_CROSS builddir_kindle
-              meson compile -C builddir_kindle
-              cp builddir_kindle/tablet-ui /src/bin/tablet-ui
-            "
+          cd kindle/gtk-ui
+          rm -rf builddir_kindle
+          meson setup --cross-file "$MESON_CROSS" builddir_kindle
+          meson compile -C builddir_kindle
+          cp builddir_kindle/tablet-ui ../bin/tablet-ui
 
       # ── Upload artifacts ─────────────────────────────────────────────────────
       - name: Upload binaries
