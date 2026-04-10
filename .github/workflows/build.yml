@@ -1,0 +1,112 @@
+name: Build Kindle Tablet Binaries
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Layer 1: Cache the heavy SDK image ──────────────────────────────────
+      # Building the cross-compilation toolchain (koxtoolchain + kindle-sdk)
+      # takes ~30 min and requires --privileged. We export the committed Docker
+      # image as a compressed tar and restore it on subsequent runs.
+      # Cache key is the Dockerfile hash so it rebuilds only when deps change.
+      - name: Restore cached kindle-sdk-final image
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kindle-sdk-final.tar.gz
+          key: kindle-sdk-final-${{ hashFiles('kindle/Dockerfile') }}
+
+      - name: Load SDK image from cache
+        if: steps.cache-sdk.outputs.cache-hit == 'true'
+        run: |
+          echo "Cache hit – loading kindle-sdk-final from archive…"
+          docker load -i /tmp/kindle-sdk-final.tar.gz
+
+      # ── Cache miss: build the SDK from scratch ──────────────────────────────
+      # Step 1 – build the toolchain stage (crosstool-NG, no mount needed).
+      # Step 2 – run gen-sdk.sh in a --privileged container (needs loopback mounts).
+      # Step 3 – commit the container as kindle-sdk-final.
+      - name: Build toolchain Docker stage
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          docker build \
+            --target toolchain \
+            -t kindle-toolchain \
+            kindle/
+
+      - name: Run gen-sdk.sh (requires --privileged)
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          docker rm -f sdk-builder 2>/dev/null || true
+          docker run --privileged --name sdk-builder -u builder kindle-toolchain \
+            /bin/sh -c "cd ~/kindle-sdk && ./gen-sdk.sh kindlehf"
+          docker commit sdk-builder kindle-sdk-final
+          docker rm sdk-builder
+
+      - name: Save SDK image to cache
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          echo "Compressing kindle-sdk-final image…"
+          docker save kindle-sdk-final | gzip > /tmp/kindle-sdk-final.tar.gz
+
+      # ── Layer 2: Build the thin wrapper image ───────────────────────────────
+      # Dockerfile.fix adds MESON_CROSS + PATH env vars on top of the committed
+      # image. This is always rebuilt (it's just two ENV lines, essentially free).
+      - name: Build kindle-build image (apply env fixes from Dockerfile.fix)
+        run: |
+          docker build \
+            -t kindle-build \
+            -f kindle/Dockerfile.fix \
+            kindle/
+
+      # ── Layer 3: Compile the binaries ───────────────────────────────────────
+      # Source is mounted read-write so the compiled binaries can be copied out.
+      # Each build dir is wiped first so stale Meson state can't cause failures.
+      - name: Create output directory
+        run: mkdir -p kindle/bin
+
+      - name: Build tablet-daemon
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/kindle":/src \
+            kindle-build \
+            sh -c "
+              set -e
+              cd /src/tablet-daemon
+              rm -rf builddir_kindle
+              meson setup --cross-file \$MESON_CROSS builddir_kindle
+              meson compile -C builddir_kindle
+              cp builddir_kindle/tablet-daemon /src/bin/tablet-daemon
+            "
+
+      - name: Build tablet-gtk-ui
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/kindle":/src \
+            kindle-build \
+            sh -c "
+              set -e
+              cd /src/gtk-ui
+              rm -rf builddir_kindle
+              meson setup --cross-file \$MESON_CROSS builddir_kindle
+              meson compile -C builddir_kindle
+              cp builddir_kindle/tablet-ui /src/bin/tablet-ui
+            "
+
+      # ── Upload artifacts ─────────────────────────────────────────────────────
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-binaries-${{ github.sha }}
+          path: |
+            kindle/bin/tablet-daemon
+            kindle/bin/tablet-ui
