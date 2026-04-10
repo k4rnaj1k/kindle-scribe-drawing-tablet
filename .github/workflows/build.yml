@@ -62,9 +62,9 @@ jobs:
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           SYSROOT="$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/arm-${TARGET}-linux-gnueabihf/sysroot"
-          mkdir -p "$SYSROOT/usr/include/X11/extensions"
-          cp /usr/include/X11/extensions/Xrandr.h "$SYSROOT/usr/include/X11/extensions/"
-          cp /usr/include/X11/extensions/randr.h  "$SYSROOT/usr/include/X11/extensions/"
+          sudo mkdir -p "$SYSROOT/usr/include/X11/extensions"
+          sudo cp /usr/include/X11/extensions/Xrandr.h "$SYSROOT/usr/include/X11/extensions/"
+          sudo cp /usr/include/X11/extensions/randr.h  "$SYSROOT/usr/include/X11/extensions/"
 
       # ── Expose toolchain to subsequent steps ────────────────────────────────
       - name: Set cross-compilation env vars
