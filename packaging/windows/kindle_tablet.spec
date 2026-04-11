@@ -31,8 +31,9 @@ a = Analysis(
         "Crypto.PublicKey",
         "Crypto.Hash",
         "bcrypt",
-        # Windows input backend
+        # Windows input backend + HID
         "kindle_tablet.input_windows",
+        "hid",
         # System-tray (optional but include if installed)
         "pystray",
         "pystray._win32",

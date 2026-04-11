@@ -20,7 +20,7 @@ if errorlevel 1 (
 
 echo =^> Installing/upgrading build dependencies...
 pip install --quiet --upgrade pip
-pip install --quiet pyinstaller Pillow pystray
+pip install --quiet pyinstaller Pillow pystray hidapi
 pip install --quiet -e ".[all]"
 
 echo =^> Generating app.ico...
