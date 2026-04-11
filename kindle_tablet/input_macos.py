@@ -49,7 +49,6 @@ import ctypes
 import ctypes.util
 import logging
 import sys
-import time
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +133,8 @@ _kCGScrollEventUnitPixel = 1
 
 # Mouse event fields
 _F_MOUSE_PRESSURE    =  2   # kCGMouseEventPressure (double)
+_F_MOUSE_DELTA_X     =  4   # kCGMouseEventDeltaX (integer + double)
+_F_MOUSE_DELTA_Y     =  5   # kCGMouseEventDeltaY (integer + double)
 _F_MOUSE_SUBTYPE     =  7   # kCGMouseEventSubtype
 
 # Tablet point fields
@@ -167,11 +168,16 @@ _NS_PEN_POINTING_DEVICE     = 1
 _NS_CURSOR_POINTING_DEVICE  = 2
 _NS_ERASER_POINTING_DEVICE  = 3
 
-# Device identity
-_WACOM_VENDOR_ID = 0x056A
-_DEVICE_ID       = 1
-_UNIQUE_ID       = 0x12345678
-_CAPABILITY_MASK = 0x00FE
+# Device identity — pen and eraser get separate IDs so apps (Qt/Krita) can
+# distinguish them via cached proximity data, just like a real Wacom tablet.
+_WACOM_VENDOR_ID   = 0x056A
+_DEVICE_ID_PEN     = 1
+_DEVICE_ID_ERASER  = 2
+_POINTER_ID_PEN    = 1
+_POINTER_ID_ERASER = 2
+_UNIQUE_ID_PEN     = 0x0000000012345678
+_UNIQUE_ID_ERASER  = 0x0000000087654321
+_CAPABILITY_MASK   = 0x00FE
 
 
 # -- Permission check ----------------------------------------------------------
@@ -202,14 +208,14 @@ def require_accessibility() -> None:
 class MacOSInput:
     """Injects pen/tablet events on macOS with correct pressure for Krita.
 
-    Proximity events are sent two ways for maximum compatibility:
-      1. Native kCGEventTabletProximity event (type 24)
-      2. Mouse-moved with kCGMouseEventSubtype = TabletProximity (backup)
-
+    Proximity events are sent as native kCGEventTabletProximity (type 24).
     Qt's qnsview.mm tabletProximity: handler reads uniqueID, pointingDeviceType,
     capabilityMask, isEnteringProximity, and deviceID from the proximity event
     and stores them in tabletDeviceDataHash[deviceID].  If proximity doesn't
     register, Qt discards ALL subsequent tablet point events.
+
+    Pen and eraser are given distinct device/pointer/unique IDs so Qt caches
+    them as separate tools and reports the correct QTabletEvent::PointerType.
     """
 
     def __init__(self):
@@ -224,6 +230,10 @@ class MacOSInput:
         self._right_down   = False
         self._in_proximity = False
         self._is_eraser    = False
+        # Track previous position to compute deltas for injected events.
+        # Apps like Unity/Krita rely on kCGMouseEventDeltaX/Y for drag direction.
+        self._prev_x: float = 0.0
+        self._prev_y: float = 0.0
 
         log.info("macOS screen: %dx%d", self.screen_width, self.screen_height)
 
@@ -240,11 +250,28 @@ class MacOSInput:
                      button: int = _kCGMouseButtonLeft) -> ctypes.c_void_p:
         return _cg.CGEventCreateMouseEvent(self._src, ev_type, self._pt(x, y), button)
 
+    def _set_deltas(self, ev, dx: float, dy: float) -> None:
+        """Set mouse delta fields explicitly.
+
+        Without this, macOS computes deltas from the last *real* mouse event,
+        which can produce a large spurious delta that drawing apps misinterpret
+        as a brushstroke (the brief up/down flick seen on macOS).
+        Both integer and double fields must be set — different apps read both.
+        """
+        idx = int(round(dx))
+        idy = int(round(dy))
+        _cg.CGEventSetIntegerValueField(ev, _F_MOUSE_DELTA_X, idx)
+        _cg.CGEventSetIntegerValueField(ev, _F_MOUSE_DELTA_Y, idy)
+        _cg.CGEventSetDoubleValueField (ev, _F_MOUSE_DELTA_X, dx)
+        _cg.CGEventSetDoubleValueField (ev, _F_MOUSE_DELTA_Y, dy)
+
     def _stamp_tablet(self, ev, pressure: float,
-                      tilt_x: float, tilt_y: float) -> None:
+                      tilt_x: float, tilt_y: float,
+                      eraser: bool = False) -> None:
         """Attach tablet fields so Qt/Krita creates a QTabletEvent."""
+        device_id = _DEVICE_ID_ERASER if eraser else _DEVICE_ID_PEN
         _cg.CGEventSetIntegerValueField(ev, _F_MOUSE_SUBTYPE,  _SUBTYPE_TABLET_POINT)
-        _cg.CGEventSetIntegerValueField(ev, _F_TAB_DEVICE_ID,  _DEVICE_ID)
+        _cg.CGEventSetIntegerValueField(ev, _F_TAB_DEVICE_ID,  device_id)
         _cg.CGEventSetDoubleValueField (ev, _F_MOUSE_PRESSURE, pressure)
         _cg.CGEventSetDoubleValueField (ev, _F_TAB_PRESSURE,   pressure)
         _cg.CGEventSetDoubleValueField (ev, _F_TAB_TILT_X,     tilt_x)
@@ -253,30 +280,40 @@ class MacOSInput:
     # -- Proximity -------------------------------------------------------------
 
     def _fill_proximity_fields(self, ev, entering: bool, eraser: bool) -> None:
-        """Fill ALL proximity fields on a CGEvent, matching fake_tablet.c v3."""
-        ptr_type = _NS_ERASER_POINTING_DEVICE if eraser else _NS_PEN_POINTING_DEVICE
+        """Fill ALL proximity fields on a CGEvent, matching fake_tablet.c v3.
+
+        Pen and eraser get distinct device/pointer/unique IDs so that Qt caches
+        them as separate tools (keyed by deviceID) and reports the correct
+        QTabletEvent::PointerType.  Using the same ID for both means Qt sees only
+        the first-registered type and ignores subsequent proximity type changes.
+        """
+        ptr_type  = _NS_ERASER_POINTING_DEVICE if eraser else _NS_PEN_POINTING_DEVICE
+        device_id = _DEVICE_ID_ERASER          if eraser else _DEVICE_ID_PEN
+        ptr_id    = _POINTER_ID_ERASER         if eraser else _POINTER_ID_PEN
+        unique_id = _UNIQUE_ID_ERASER          if eraser else _UNIQUE_ID_PEN
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_ID,        _WACOM_VENDOR_ID)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_TABLET_ID,        1)
-        _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_ID,       1)
-        _cg.CGEventSetIntegerValueField(ev, _F_PROX_DEVICE_ID,        _DEVICE_ID)
+        _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_ID,       ptr_id)
+        _cg.CGEventSetIntegerValueField(ev, _F_PROX_DEVICE_ID,        device_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_SYSTEM_TABLET_ID, 1)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_PTR_TYPE,  ptr_type)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_TYPE,     ptr_type)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_ENTER,            1 if entering else 0)
-        _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_UNIQUE_ID, _UNIQUE_ID)
+        _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_UNIQUE_ID, unique_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_CAPABILITY_MASK,  _CAPABILITY_MASK)
 
     def _send_proximity(self, x: float, y: float,
                         enter: bool, eraser: bool = False) -> None:
-        """Send proximity via both native event and mouse-moved backup.
+        """Send a native kCGEventTabletProximity event (type 24).
 
-        Method 1: Native kCGEventTabletProximity (type 24).
-        Method 2: Mouse-moved with subtype=SUBTYPE_TABLET_PROXIMITY (backup).
-        Both are sent for maximum compatibility across Qt versions.
+        We intentionally send only the native event and skip the old
+        "Method 2" MouseMoved-with-proximity-subtype backup.  That backup
+        injected an extra kCGEventMouseMoved at the current position which
+        drawing apps received as a real cursor move — causing the brief
+        phantom brushstroke (up/down flick) reported on macOS.  Modern Qt
+        versions (5.x+) handle the native proximity event correctly.
         """
         pt = self._pt(x, y)
-
-        # Method 1: Native TabletProximity event
         ev = _cg.CGEventCreate(self._src)
         if ev:
             _cg.CGEventSetType(ev, _kCGEventTabletProximity)
@@ -285,24 +322,19 @@ class MacOSInput:
             _cg.CGEventPost(_kCGHIDEventTap, ev)
             _cg.CFRelease(ev)
 
-        time.sleep(0.001)  # 1ms for event to propagate
-
-        # Method 2: Mouse-moved with proximity subtype (backup path)
-        mev = _cg.CGEventCreateMouseEvent(
-            self._src, _kCGEventMouseMoved, pt, _kCGMouseButtonLeft)
-        if mev:
-            _cg.CGEventSetIntegerValueField(mev, _F_MOUSE_SUBTYPE, _SUBTYPE_TABLET_PROXIMITY)
-            self._fill_proximity_fields(mev, enter, eraser)
-            _cg.CGEventPost(_kCGHIDEventTap, mev)
-            _cg.CFRelease(mev)
-
-        time.sleep(0.01)  # 10ms for app to process proximity
-
     def _ensure_proximity(self, x: float, y: float, eraser: bool) -> None:
-        if not self._in_proximity or eraser != self._is_eraser:
+        if not self._in_proximity:
             self._send_proximity(x, y, enter=True, eraser=eraser)
             self._in_proximity = True
             self._is_eraser    = eraser
+        elif eraser != self._is_eraser:
+            # Tool switched (pen ↔ eraser): tell the app the old tool left
+            # before the new one enters.  Without the leave event Qt keeps the
+            # stale pointer-type in its device cache and treats eraser strokes
+            # as normal pen strokes.
+            self._send_proximity(x, y, enter=False, eraser=self._is_eraser)
+            self._send_proximity(x, y, enter=True,  eraser=eraser)
+            self._is_eraser = eraser
 
     def _leave_proximity(self, x: float, y: float) -> None:
         if self._in_proximity:
@@ -322,23 +354,29 @@ class MacOSInput:
         else:
             ev_type, btn = _kCGEventMouseMoved,        _kCGMouseButtonLeft
         ev = self._mouse_event(ev_type, x, y, btn)
-        self._stamp_tablet(ev, pressure, tilt_x, tilt_y)
+        self._set_deltas(ev, x - self._prev_x, y - self._prev_y)
+        self._stamp_tablet(ev, pressure, tilt_x, tilt_y, eraser)
         self._post(ev)
+        self._prev_x, self._prev_y = x, y
 
     def pen_down(self, x: float, y: float, pressure: float = 0.5,
                  tilt_x: float = 0.0, tilt_y: float = 0.0,
                  eraser: bool = False) -> None:
         self._ensure_proximity(x, y, eraser)
         ev = self._mouse_event(_kCGEventLeftMouseDown, x, y)
-        self._stamp_tablet(ev, pressure, tilt_x, tilt_y)
+        self._set_deltas(ev, x - self._prev_x, y - self._prev_y)
+        self._stamp_tablet(ev, pressure, tilt_x, tilt_y, eraser)
         self._post(ev)
         self._left_down = True
+        self._prev_x, self._prev_y = x, y
 
     def pen_up(self, x: float, y: float) -> None:
         ev = self._mouse_event(_kCGEventLeftMouseUp, x, y)
-        self._stamp_tablet(ev, 0.0, 0.0, 0.0)
+        self._set_deltas(ev, x - self._prev_x, y - self._prev_y)
+        self._stamp_tablet(ev, 0.0, 0.0, 0.0, self._is_eraser)
         self._post(ev)
         self._left_down = False
+        self._prev_x, self._prev_y = x, y
 
     def pen_leave(self, x: float, y: float) -> None:
         if self._left_down:

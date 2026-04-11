@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""Linux input event parser for Kindle digitizer and touch devices.
+"""Linux input event parser for Kindle digitizer.
 
-Parses raw bytes from /dev/input/eventN into structured pen/touch events.
+Parses raw bytes from /dev/input/eventN into structured pen events.
 The Kindle Scribe runs 32-bit ARM Linux, so struct input_event is 16 bytes:
     struct timeval { uint32_t sec; uint32_t usec; }  // 8 bytes
     uint16_t type;
@@ -11,7 +11,7 @@ The Kindle Scribe runs 32-bit ARM Linux, so struct input_event is 16 bytes:
 """
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 
 # 32-bit ARM: struct input_event = 16 bytes
@@ -36,12 +36,6 @@ class AbsCode(IntEnum):
     ABS_DISTANCE = 0x19
     ABS_TILT_X = 0x1A
     ABS_TILT_Y = 0x1B
-    # Multi-touch (finger)
-    ABS_MT_SLOT = 0x2F
-    ABS_MT_TOUCH_MAJOR = 0x30
-    ABS_MT_POSITION_X = 0x35
-    ABS_MT_POSITION_Y = 0x36
-    ABS_MT_TRACKING_ID = 0x39
 
 
 class KeyCode(IntEnum):
@@ -50,12 +44,10 @@ class KeyCode(IntEnum):
     BTN_STYLUS2 = 0x14C
     BTN_TOOL_PEN = 0x140
     BTN_TOOL_RUBBER = 0x141
-    BTN_TOOL_FINGER = 0x145
 
 
 class SynCode(IntEnum):
     SYN_REPORT = 0x00
-    SYN_MT_REPORT = 0x02
 
 
 # Control message type (type=0xFF, never produced by kernel)
@@ -83,29 +75,6 @@ class PenState:
     dirty: bool = False     # has state changed since last sync?
 
 
-@dataclass
-class TouchSlot:
-    """State for one touch contact point."""
-    tracking_id: int = -1
-    x: int = 0
-    y: int = 0
-    touch_major: int = 0
-    active: bool = False
-
-
-@dataclass
-class TouchState:
-    """Current state of multi-touch input."""
-    current_slot: int = 0
-    slots: dict[int, TouchSlot] = field(default_factory=lambda: {0: TouchSlot()})
-    dirty: bool = False
-
-    def get_slot(self, slot_id: int) -> TouchSlot:
-        if slot_id not in self.slots:
-            self.slots[slot_id] = TouchSlot()
-        return self.slots[slot_id]
-
-
 class EventParser:
     """Parses raw Linux input events and maintains pen/touch state."""
 
@@ -118,7 +87,6 @@ class EventParser:
             self._size = EVENT_SIZE_64
 
         self.pen = PenState()
-        self.touch = TouchState()
         self._buffer = bytearray()
 
     @property
@@ -130,7 +98,6 @@ class EventParser:
 
         Returns a list of event names when a SYN_REPORT is received:
         - "pen" if pen state changed
-        - "touch" if touch state changed
         - ("control", code, value) for control messages
         """
         self._buffer.extend(data)
@@ -159,14 +126,9 @@ class EventParser:
 
         if ev_type == EventType.EV_SYN:
             if ev_code == SynCode.SYN_REPORT:
-                result = None
                 if self.pen.dirty:
                     self.pen.dirty = False
-                    result = "pen"
-                if self.touch.dirty:
-                    self.touch.dirty = False
-                    result = result or "touch"
-                return result
+                    return "pen"
             return None
 
         if ev_type == EventType.EV_ABS:
@@ -196,26 +158,6 @@ class EventParser:
         elif code == AbsCode.ABS_DISTANCE:
             self.pen.distance = value
             self.pen.dirty = True
-        # # Multi-touch axes
-        # elif code == AbsCode.ABS_MT_SLOT:
-        #     self.touch.current_slot = value
-        # elif code == AbsCode.ABS_MT_TRACKING_ID:
-        #     slot = self.touch.get_slot(self.touch.current_slot)
-        #     slot.tracking_id = value
-        #     slot.active = value >= 0
-        #     self.touch.dirty = True
-        # elif code == AbsCode.ABS_MT_POSITION_X:
-        #     slot = self.touch.get_slot(self.touch.current_slot)
-        #     slot.x = value
-        #     self.touch.dirty = True
-        # elif code == AbsCode.ABS_MT_POSITION_Y:
-        #     slot = self.touch.get_slot(self.touch.current_slot)
-        #     slot.y = value
-        #     self.touch.dirty = True
-        # elif code == AbsCode.ABS_MT_TOUCH_MAJOR:
-        #     slot = self.touch.get_slot(self.touch.current_slot)
-        #     slot.touch_major = value
-        #     self.touch.dirty = True
 
     def _process_key(self, code: int, value: int) -> None:
         pressed = value != 0
