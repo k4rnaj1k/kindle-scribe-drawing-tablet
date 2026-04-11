@@ -374,6 +374,15 @@ class MacOSInput:
             self._send_proximity(x, y, enter=True, eraser=eraser)
             self._in_proximity = True
             self._is_eraser    = eraser
+            # Reset the delta baseline to the current position so that the
+            # first mouse event after re-entering proximity carries a ~zero
+            # delta.  Without this, _prev_x/_prev_y still holds the position
+            # from the previous proximity session; if the pen re-enters at a
+            # different spot (or goes directly from out-of-range to touching
+            # with no hover phase), the first event gets a large spurious delta
+            # that velocity/direction-sensitive brushes turn into a phantom
+            # up/down stroke.
+            self._prev_x, self._prev_y = x, y
         elif eraser != self._is_eraser:
             # Tool switched (pen ↔ eraser) while still in proximity.
             # Send only the enter event for the new tool — no leave first.
@@ -415,7 +424,11 @@ class MacOSInput:
                  eraser: bool = False) -> None:
         self._ensure_proximity(x, y, eraser)
         ev = self._mouse_event(_kCGEventLeftMouseDown, x, y)
-        self._set_deltas(ev, x - self._prev_x, y - self._prev_y)
+        # Zero delta on touch-down: this is the start of a new stroke so there
+        # is no meaningful prior direction to inherit.  Any residual delta from
+        # the hover phase (or a stale _prev position) would otherwise give
+        # direction/velocity-sensitive brushes a wrong initial vector.
+        self._set_deltas(ev, 0.0, 0.0)
         self._stamp_tablet(ev, pressure, tilt_x, tilt_y, eraser)
         self._post(ev)
         self._left_down = True
