@@ -75,11 +75,9 @@ jobs:
           echo "$HOME/x-tools/arm-${TARGET}-linux-gnueabihf/bin" >> $GITHUB_PATH
 
       # ── Compile the binaries ─────────────────────────────────────────────────
-      - name: Create output directory
-        run: mkdir -p kindle/bin
-
       - name: Build tablet-daemon
         run: |
+          mkdir -p kindle/bin
           cd kindle/tablet-daemon
           rm -rf builddir_kindle
           meson setup --cross-file "$MESON_CROSS" builddir_kindle
