@@ -442,7 +442,7 @@ class KindleConnector:
 
         log.info("Starting shortcut monitor (tailing /tmp/tablet-shortcut)")
 
-        cmd = 'touch /tmp/tablet-shortcut && tail -f /tmp/tablet-shortcut'
+        cmd = '> /tmp/tablet-shortcut && tail -f /tmp/tablet-shortcut'
         transport = self._ssh.get_transport()
         channel = transport.open_session()
         channel.exec_command(cmd)
