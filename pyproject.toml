@@ -15,9 +15,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy"]
+# System-tray support (optional – GUI works fine without it)
+tray = ["pystray>=0.19", "Pillow>=10.0"]
+# All optional extras bundled
+all = ["pystray>=0.19", "Pillow>=10.0"]
 
 [project.scripts]
 kindle-tablet = "kindle_tablet.main:main"
+kindle-tablet-ui = "kindle_tablet.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

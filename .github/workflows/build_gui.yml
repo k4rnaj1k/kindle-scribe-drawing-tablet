@@ -1,0 +1,86 @@
+name: Build GUI Apps
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ── macOS .app bundle ───────────────────────────────────────────────────────
+  build-macos:
+    name: macOS app bundle
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install py2app Pillow pystray
+          pip install -e ".[all]"
+
+      - name: Generate icon
+        run: python packaging/macos/make_icon.py
+
+      - name: Build .app with py2app
+        run: |
+          python packaging/macos/build_app.py py2app \
+            --dist-dir dist \
+            --build-dir /tmp/py2app-build
+
+      - name: Zip the .app
+        run: |
+          cd dist
+          zip -r --symlinks "KindleTablet-macOS.zip" "Kindle Tablet.app"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KindleTablet-macOS
+          path: dist/KindleTablet-macOS.zip
+          retention-days: 30
+
+  # ── Windows .exe ────────────────────────────────────────────────────────────
+  build-windows:
+    name: Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller Pillow pystray
+          pip install -e ".[all]"
+
+      - name: Generate icon
+        run: python packaging\windows\make_icon.py
+
+      - name: Build .exe with PyInstaller
+        run: pyinstaller packaging\windows\kindle_tablet.spec --noconfirm
+
+      - name: Zip the exe folder
+        run: |
+          cd dist
+          Compress-Archive -Path KindleTablet -DestinationPath KindleTablet-Windows.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KindleTablet-Windows
+          path: dist\KindleTablet-Windows.zip
+          retention-days: 30
