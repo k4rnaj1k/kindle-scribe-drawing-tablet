@@ -203,26 +203,11 @@ _NS_ERASER_POINTING_DEVICE  = 3
 _WACOM_VENDOR_PTR_PEN    = 0x0802
 _WACOM_VENDOR_PTR_ERASER = 0x0812
 
-# Device identity.
-#
-# Pen and eraser share the same deviceID (1), mirroring a real two-ended Wacom
-# stylus where both tips belong to the same physical device.
-#
-# Why this matters: [NSEvent deviceID] on injected mouse-with-tablet-subtype
-# events always returns 1, regardless of what kCGTabletEventDeviceID (field 24)
-# is set to.  If eraser used deviceID=2, Qt would look up hash[1] after the
-# eraser proximity enter (which stored hash[2]=eraser) and find the stale
-# hash[1]=pen entry — producing "stylus move" instead of "eraser move".
-#
-# Using a shared deviceID=1 means the proximity leave+enter sequence we already
-# send on tool switch updates hash[1] from pen→eraser (or vice-versa), so the
-# [NSEvent deviceID]=1 lookup always finds the correct current tool type.
-#
-# The two ends are still distinguished by their pointerID and uniqueID, which
-# is how real Wacom hardware identifies each tip within the same device.
+# Device identity — pen and eraser get separate IDs so apps (Qt/Krita) can
+# distinguish them via cached proximity data, just like a real Wacom tablet.
 _WACOM_VENDOR_ID   = 0x056A
 _DEVICE_ID_PEN     = 1
-_DEVICE_ID_ERASER  = 1   # same physical device as pen — see note above
+_DEVICE_ID_ERASER  = 2
 _POINTER_ID_PEN    = 1
 _POINTER_ID_ERASER = 2
 _UNIQUE_ID_PEN     = 0x0000000012345678
