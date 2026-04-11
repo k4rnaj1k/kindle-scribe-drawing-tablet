@@ -106,7 +106,8 @@ class PillButton(tk.Canvas):
                  bg=C_ACCENT, fg=C_TEXT, hover=C_ACCENT_HI,
                  width=130, height=38, radius=19, font=FONT_BTN, **kw):
         super().__init__(parent, width=width, height=height,
-                         bg=parent["bg"], highlightthickness=0, **kw)
+                         bg=parent["bg"], highlightthickness=0,
+                         cursor="hand2", **kw)
         self._bg_normal = bg
         self._bg_hover  = hover
         self._fg        = fg
@@ -123,19 +124,26 @@ class PillButton(tk.Canvas):
         self.bind("<Button-1>", self._on_click)
 
     def _rounded_rect(self, x1, y1, x2, y2, r, **kw):
-        self.create_arc(x1, y1, x1+2*r, y1+2*r, start=90,  extent=90,  **kw)
-        self.create_arc(x2-2*r, y1, x2, y1+2*r, start=0,   extent=90,  **kw)
-        self.create_arc(x1, y2-2*r, x1+2*r, y2, start=180, extent=90,  **kw)
-        self.create_arc(x2-2*r, y2-2*r, x2, y2, start=270, extent=90,  **kw)
-        self.create_rectangle(x1+r, y1, x2-r, y2, **kw)
-        self.create_rectangle(x1, y1+r, x2, y2-r, **kw)
+        # Single smooth polygon — no seams between arcs/rects on Windows.
+        # Duplicate corner control points force a tight Bezier curve at each corner.
+        kw.pop("outline", None)
+        kw.pop("width", None)
+        pts = [
+            x1+r, y1,    x2-r, y1,                 # top
+            x2-r, y1,    x2,   y1,    x2,   y1+r,  # top-right
+            x2,   y1+r,  x2,   y2-r,               # right
+            x2,   y2-r,  x2,   y2,    x2-r, y2,    # bottom-right
+            x2-r, y2,    x1+r, y2,                 # bottom
+            x1+r, y2,    x1,   y2,    x1,   y2-r,  # bottom-left
+            x1,   y2-r,  x1,   y1+r,               # left
+            x1,   y1+r,  x1,   y1,    x1+r, y1,    # top-left
+        ]
+        self.create_polygon(pts, smooth=True, **kw)
 
     def _draw(self, bg: str) -> None:
         self.delete("all")
         w, h, r = int(self["width"]), int(self["height"]), self._radius
-        outline = C_ACCENT_HI if not self._disabled else C_BORDER
-        self._rounded_rect(1, 1, w-1, h-1, r,
-                           fill=bg, outline=outline, width=0)
+        self._rounded_rect(1, 1, w-1, h-1, r, fill=bg)
         alpha = C_TEXT_DIM if self._disabled else self._fg
         self.create_text(w//2, h//2, text=self._text_str,
                          fill=alpha, font=self._font)
@@ -246,6 +254,8 @@ class KindleTabletApp(tk.Tk):
         # ── state ─────────────────────────────────────────────────────────────
         self._cfg: Config = load_config(CONFIG_PATH)
         self._connector: Optional[KindleConnector] = None
+        self._handler = None
+        self._backend = None
         self._running = False
         self._log_queue: queue.Queue = queue.Queue()
         self._tray_icon = None
@@ -771,6 +781,8 @@ class KindleTabletApp(tk.Tk):
             return
 
         self._connector = connector
+        self._handler   = handler   # keep strong refs so GC never drops them
+        self._backend   = backend
         self._running   = True
         try:
             save_config(cfg, CONFIG_PATH)
@@ -902,6 +914,20 @@ def _hover(widget: tk.Widget, on: str, off: str) -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Surface any unhandled exceptions visually — critical on Windows where the
+    # process is windowed (no console) and crashes are otherwise invisible.
+    import traceback
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        log.error("Unhandled exception:\n%s", msg)
+        try:
+            messagebox.showerror("Kindle Tablet — unexpected error", msg)
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
     if sys.platform == "darwin":
         try:
             from AppKit import NSApp, NSApplicationActivationPolicyRegular
@@ -909,7 +935,12 @@ def main() -> None:
         except Exception:
             pass
 
-    app = KindleTabletApp()
+    try:
+        app = KindleTabletApp()
+    except Exception:
+        _excepthook(*sys.exc_info())
+        return
+
     if HAS_TRAY:
         app.setup_tray()
     app.mainloop()
