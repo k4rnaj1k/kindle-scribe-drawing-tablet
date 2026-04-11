@@ -185,10 +185,23 @@ _kVK_Shift             = 0x38   # left Shift
 _kCGEventFlagMaskCommand = 0x00100000   # 1 << 20
 _kCGEventFlagMaskShift   = 0x00020000   # 1 << 17
 
-# NSPointingDeviceType (what Qt reads to determine pen vs eraser)
+# NSPointingDeviceType (what Qt reads via [NSEvent pointingDeviceType] / field 37)
 _NS_PEN_POINTING_DEVICE     = 1
 _NS_CURSOR_POINTING_DEVICE  = 2
 _NS_ERASER_POINTING_DEVICE  = 3
+
+# Wacom vendor pointer types (kCGTabletProximityEventVendorPointerType, field 33).
+# This is a DIFFERENT field from NSPointingDeviceType.  Krita's KisTabletSupportMac
+# installs its own CGEventTap and reads field 33 directly, applying Wacom bit-pattern
+# logic to identify the tool.  Qt's own NSView path reads field 37 (NSPointingDeviceType),
+# so both fields must be set correctly.
+#
+# Wacom convention (confirmed from captured Wacom driver events on macOS):
+#   high byte  0x08  = Wacom Intuos / Pro device family
+#   low byte   0x02  = pen nib
+#   low byte   0x12  = eraser tip (0x02 | 0x10, where 0x10 is the "eraser" bit)
+_WACOM_VENDOR_PTR_PEN    = 0x0802
+_WACOM_VENDOR_PTR_ERASER = 0x0812
 
 # Device identity — pen and eraser get separate IDs so apps (Qt/Krita) can
 # distinguish them via cached proximity data, just like a real Wacom tablet.
@@ -308,18 +321,30 @@ class MacOSInput:
         them as separate tools (keyed by deviceID) and reports the correct
         QTabletEvent::PointerType.  Using the same ID for both means Qt sees only
         the first-registered type and ignores subsequent proximity type changes.
+
+        Two pointer-type fields must be set independently:
+          field 33 (kCGTabletProximityEventVendorPointerType): Wacom vendor code.
+            Krita's KisTabletSupportMac reads this directly from the CGEvent via
+            its own CGEventTap and uses Wacom bit-pattern logic (0x0812 = eraser).
+            Setting this to the NSPointingDeviceType (3) causes Krita's tap to
+            misidentify the tool.
+          field 37 (kCGTabletProximityEventPointerType): NSPointingDeviceType.
+            Qt's qnsview_tablet.mm reads [NSEvent pointingDeviceType] which is
+            derived from this field.  Must be NSEraserPointingDevice (3) for
+            Qt to set QTabletEvent::Eraser.
         """
-        ptr_type  = _NS_ERASER_POINTING_DEVICE if eraser else _NS_PEN_POINTING_DEVICE
-        device_id = _DEVICE_ID_ERASER          if eraser else _DEVICE_ID_PEN
-        ptr_id    = _POINTER_ID_ERASER         if eraser else _POINTER_ID_PEN
-        unique_id = _UNIQUE_ID_ERASER          if eraser else _UNIQUE_ID_PEN
+        ptr_type        = _NS_ERASER_POINTING_DEVICE if eraser else _NS_PEN_POINTING_DEVICE
+        vendor_ptr_type = _WACOM_VENDOR_PTR_ERASER   if eraser else _WACOM_VENDOR_PTR_PEN
+        device_id       = _DEVICE_ID_ERASER          if eraser else _DEVICE_ID_PEN
+        ptr_id          = _POINTER_ID_ERASER         if eraser else _POINTER_ID_PEN
+        unique_id       = _UNIQUE_ID_ERASER          if eraser else _UNIQUE_ID_PEN
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_ID,        _WACOM_VENDOR_ID)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_TABLET_ID,        1)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_ID,       ptr_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_DEVICE_ID,        device_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_SYSTEM_TABLET_ID, 1)
-        _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_PTR_TYPE,  ptr_type)
-        _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_TYPE,     ptr_type)
+        _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_PTR_TYPE,  vendor_ptr_type)  # Wacom code
+        _cg.CGEventSetIntegerValueField(ev, _F_PROX_POINTER_TYPE,     ptr_type)         # NSPointingDeviceType
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_ENTER,            1 if entering else 0)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_UNIQUE_ID, unique_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_CAPABILITY_MASK,  _CAPABILITY_MASK)

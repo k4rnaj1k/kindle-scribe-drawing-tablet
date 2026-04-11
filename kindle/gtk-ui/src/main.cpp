@@ -386,9 +386,9 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
      *                                                                  *
      *  [Undo][Redo][ ][ ][Save]                          [LOCK]        *
      *                                                                  */
-    double top_sz  = 80.0;   /* square button size */
+    double top_sz  = 96.0;   /* square button size */
     double top_mar = 16.0;   /* screen edge margin  */
-    double top_gap = 10.0;   /* gap between buttons */
+    double top_gap = 16.0;   /* gap between buttons */
     double top_y   = top_mar;
 
     /* Lock button – far right */
