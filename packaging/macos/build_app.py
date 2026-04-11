@@ -53,6 +53,9 @@ OPTIONS = {
     ],
     # Strip debug symbols for a smaller bundle
     "strip": True,
+    # Build intermediates go here (keeps repo root clean)
+    "bdist_base": "/tmp/py2app-build",
+    "build_base": "/tmp/py2app-build",
 }
 
 setup(

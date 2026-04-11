@@ -29,9 +29,7 @@ echo "==> Cleaning previous build artefacts…"
 rm -rf packaging/macos/build packaging/macos/dist
 
 echo "==> Running py2app…"
-python3 packaging/macos/build_app.py py2app \
-    --dist-dir dist \
-    --build-dir packaging/macos/build
+python3 packaging/macos/build_app.py py2app --dist-dir dist
 
 echo ""
 echo "✅  Done!  App bundle: dist/Kindle Tablet.app"

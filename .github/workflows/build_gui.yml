@@ -30,10 +30,7 @@ jobs:
         run: python packaging/macos/make_icon.py
 
       - name: Build .app with py2app
-        run: |
-          python packaging/macos/build_app.py py2app \
-            --dist-dir dist \
-            --build-dir /tmp/py2app-build
+        run: python packaging/macos/build_app.py py2app --dist-dir dist
 
       - name: Zip the .app
         run: |
