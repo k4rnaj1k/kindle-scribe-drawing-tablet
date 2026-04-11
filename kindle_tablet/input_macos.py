@@ -375,12 +375,16 @@ class MacOSInput:
             self._in_proximity = True
             self._is_eraser    = eraser
         elif eraser != self._is_eraser:
-            # Tool switched (pen ↔ eraser): tell the app the old tool left
-            # before the new one enters.  Without the leave event Qt keeps the
-            # stale pointer-type in its device cache and treats eraser strokes
-            # as normal pen strokes.
-            self._send_proximity(x, y, enter=False, eraser=self._is_eraser)
-            self._send_proximity(x, y, enter=True,  eraser=eraser)
+            # Tool switched (pen ↔ eraser) while still in proximity.
+            # Send only the enter event for the new tool — no leave first.
+            #
+            # Real Wacom hardware never sends a proximity-leave when flipping
+            # between pen tip and eraser; it just fires a new proximity-enter
+            # with the updated pointer type.  Sending a leave causes macOS to
+            # show the system mouse cursor, and injected proximity-enter events
+            # do not reliably re-hide it, leaving a visible cursor in Krita
+            # until the user alt-tabs away and back.
+            self._send_proximity(x, y, enter=True, eraser=eraser)
             self._is_eraser = eraser
 
     def _leave_proximity(self, x: float, y: float) -> None:
