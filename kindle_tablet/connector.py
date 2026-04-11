@@ -504,25 +504,27 @@ class KindleConnector:
         host = self.config.kindle.host
         port = self.config.kindle.stream_port
 
-        log.info("Connecting to tablet-server at %s:%d...", host, port)
+        log.info("Connecting to tablet-daemon at %s:%d...", host, port)
         retries = 5
         sock = None
         for attempt in range(retries):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5)
-                sock.connect((host, port))
-                sock.settimeout(None)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                log.info("Connected to tablet-server.")
+                s.settimeout(5)
+                s.connect((host, port))
+                s.settimeout(None)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock = s
+                log.info("Connected to tablet-daemon.")
                 break
             except (ConnectionRefusedError, socket.timeout):
+                s.close()
                 log.warning("Connection attempt %d/%d failed, retrying...",
                             attempt + 1, retries)
                 time.sleep(1)
 
         if sock is None:
-            log.error("Could not connect to tablet-server")
+            log.error("Could not connect to tablet-daemon")
             return
 
         parser = self.parser
@@ -568,10 +570,10 @@ class KindleConnector:
         """Stop streaming and disconnect."""
         self._running = False
 
-        # If in TCP mode, kill the server on the Kindle
+        # If in TCP mode, kill the daemon on the Kindle
         if self.config.mode == "tcp" and self._ssh:
             try:
-                self._ssh.exec_command("pkill -f 'tablet-server' 2>/dev/null")
+                self._ssh.exec_command("pkill -f 'tablet-daemon' 2>/dev/null")
             except Exception:
                 pass
 

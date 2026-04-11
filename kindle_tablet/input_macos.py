@@ -314,7 +314,8 @@ class MacOSInput:
 
     # -- Proximity -------------------------------------------------------------
 
-    def _fill_proximity_fields(self, ev, entering: bool, eraser: bool) -> None:
+    def _fill_proximity_fields(self, ev, entering: bool, eraser: bool,
+                               device_id_override: int | None = None) -> None:
         """Fill ALL proximity fields on a CGEvent, matching fake_tablet.c v3.
 
         Pen and eraser get distinct device/pointer/unique IDs so that Qt caches
@@ -332,10 +333,15 @@ class MacOSInput:
             Qt's qnsview_tablet.mm reads [NSEvent pointingDeviceType] which is
             derived from this field.  Must be NSEraserPointingDevice (3) for
             Qt to set QTabletEvent::Eraser.
+
+        device_id_override: when set, replaces the normal device ID in the
+            proximity event.  Used to send a Qt-hash-sync event (see
+            _ensure_proximity) without changing the pointer/unique IDs.
         """
         ptr_type        = _NS_ERASER_POINTING_DEVICE if eraser else _NS_PEN_POINTING_DEVICE
         vendor_ptr_type = _WACOM_VENDOR_PTR_ERASER   if eraser else _WACOM_VENDOR_PTR_PEN
-        device_id       = _DEVICE_ID_ERASER          if eraser else _DEVICE_ID_PEN
+        device_id       = (device_id_override if device_id_override is not None
+                           else (_DEVICE_ID_ERASER if eraser else _DEVICE_ID_PEN))
         ptr_id          = _POINTER_ID_ERASER         if eraser else _POINTER_ID_PEN
         unique_id       = _UNIQUE_ID_ERASER          if eraser else _UNIQUE_ID_PEN
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_ID,        _WACOM_VENDOR_ID)
@@ -349,8 +355,9 @@ class MacOSInput:
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_VENDOR_UNIQUE_ID, unique_id)
         _cg.CGEventSetIntegerValueField(ev, _F_PROX_CAPABILITY_MASK,  _CAPABILITY_MASK)
 
-    def _send_proximity(self, x: float, y: float,
-                        enter: bool, eraser: bool = False) -> None:
+    def _send_proximity(self, x: float, y: float, enter: bool,
+                        eraser: bool = False,
+                        device_id_override: int | None = None) -> None:
         """Send a native kCGEventTabletProximity event (type 24).
 
         We intentionally send only the native event and skip the old
@@ -365,35 +372,45 @@ class MacOSInput:
         if ev:
             _cg.CGEventSetType(ev, _kCGEventTabletProximity)
             _cg.CGEventSetLocation(ev, pt)
-            self._fill_proximity_fields(ev, enter, eraser)
+            self._fill_proximity_fields(ev, enter, eraser, device_id_override)
             _cg.CGEventPost(_kCGHIDEventTap, ev)
             _cg.CFRelease(ev)
 
     def _ensure_proximity(self, x: float, y: float, eraser: bool) -> None:
-        if not self._in_proximity:
+        entering_fresh = not self._in_proximity
+        if entering_fresh or eraser != self._is_eraser:
+            # Primary proximity enter: uses the correct deviceID for the tool
+            # (1 for pen, 2 for eraser).  Krita's KisTabletSupportMac CGEventTap
+            # reads this event and indexes its own device table by deviceID, so
+            # it sees the correct vendorPointerType (0x0802/0x0812) and pointer
+            # type for eraser detection.
             self._send_proximity(x, y, enter=True, eraser=eraser)
-            self._in_proximity = True
-            self._is_eraser    = eraser
-            # Reset the delta baseline to the current position so that the
-            # first mouse event after re-entering proximity carries a ~zero
-            # delta.  Without this, _prev_x/_prev_y still holds the position
-            # from the previous proximity session; if the pen re-enters at a
-            # different spot (or goes directly from out-of-range to touching
-            # with no hover phase), the first event gets a large spurious delta
-            # that velocity/direction-sensitive brushes turn into a phantom
-            # up/down stroke.
-            self._prev_x, self._prev_y = x, y
-        elif eraser != self._is_eraser:
-            # Tool switched (pen ↔ eraser) while still in proximity.
-            # Send only the enter event for the new tool — no leave first.
-            #
-            # Real Wacom hardware never sends a proximity-leave when flipping
-            # between pen tip and eraser; it just fires a new proximity-enter
-            # with the updated pointer type.  Sending a leave causes macOS to
-            # show the system mouse cursor, and injected proximity-enter events
-            # do not reliably re-hide it, leaving a visible cursor in Krita
-            # until the user alt-tabs away and back.
-            self._send_proximity(x, y, enter=True, eraser=eraser)
+
+            # Secondary proximity enter for eraser: re-sends with deviceID=1.
+            # [NSEvent deviceID] on injected mouse-with-tablet-subtype events
+            # always returns 1 regardless of kCGTabletEventDeviceID (field 24).
+            # Qt's tabletDeviceDataHash lookup therefore always hits hash[1].
+            # Without this extra event, hash[1] still holds the pen entry while
+            # the eraser is active, causing Qt to emit stylus QTabletEvents for
+            # eraser strokes.  Sending a second enter with deviceID=1 but eraser
+            # pointer type keeps hash[1] in sync with the actual current tool.
+            # No corresponding update is needed when switching back to pen because
+            # the pen's primary enter already uses deviceID=1.
+            if eraser and _DEVICE_ID_ERASER != _DEVICE_ID_PEN:
+                self._send_proximity(x, y, enter=True, eraser=True,
+                                     device_id_override=_DEVICE_ID_PEN)
+
+            if entering_fresh:
+                self._in_proximity = True
+                # Reset the delta baseline to the current position so that the
+                # first mouse event after re-entering proximity carries a ~zero
+                # delta.  Without this, _prev_x/_prev_y still holds the position
+                # from the previous proximity session; if the pen re-enters at a
+                # different spot (or goes directly from out-of-range to touching
+                # with no hover phase), the first event gets a large spurious
+                # delta that velocity/direction-sensitive brushes turn into a
+                # phantom up/down stroke.
+                self._prev_x, self._prev_y = x, y
             self._is_eraser = eraser
 
     def _leave_proximity(self, x: float, y: float) -> None:
