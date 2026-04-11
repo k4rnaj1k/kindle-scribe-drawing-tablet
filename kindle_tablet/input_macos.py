@@ -93,6 +93,13 @@ _cg.CGEventCreateScrollWheelEvent.restype  = ctypes.c_void_p
 _cg.CGEventCreateScrollWheelEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
                                                ctypes.c_uint32, ctypes.c_int32,
                                                ctypes.c_int32]
+# CGEventCreateKeyboardEvent
+_cg.CGEventCreateKeyboardEvent.restype  = ctypes.c_void_p
+_cg.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                            ctypes.c_bool]
+# CGEventSetFlags
+_cg.CGEventSetFlags.restype  = None
+_cg.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
 # Display info
 from Quartz import CGMainDisplayID, CGDisplayPixelsWide, CGDisplayPixelsHigh
 
@@ -162,6 +169,20 @@ _F_PROX_ENTER              = 38   # kCGTabletProximityEventEnterProximity
 _SUBTYPE_DEFAULT            = 0
 _SUBTYPE_TABLET_POINT       = 1
 _SUBTYPE_TABLET_PROXIMITY   = 2
+
+# Virtual key codes (from Carbon HIToolbox/Events.h)
+_kVK_ANSI_S            = 0x01
+_kVK_ANSI_Z            = 0x06
+_kVK_ANSI_Y            = 0x10   # not standard for redo on macOS, but some apps use it
+_kVK_ANSI_LeftBracket  = 0x21   # [
+_kVK_ANSI_RightBracket = 0x1E   # ]
+_kVK_ANSI_Slash        = 0x2C   # /
+_kVK_Command           = 0x37   # left Command
+_kVK_Shift             = 0x38   # left Shift
+
+# CGEventFlags modifier masks
+_kCGEventFlagMaskCommand = 0x00100000   # 1 << 20
+_kCGEventFlagMaskShift   = 0x00020000   # 1 << 17
 
 # NSPointingDeviceType (what Qt reads to determine pen vs eraser)
 _NS_PEN_POINTING_DEVICE     = 1
@@ -399,3 +420,82 @@ class MacOSInput:
             ctypes.c_int32(dy), ctypes.c_int32(dx)
         )
         self._post(ev)
+
+    # -- Keyboard shortcuts ----------------------------------------------------
+
+    def _send_key(self, keycode: int, flags: int = 0) -> None:
+        """Inject a key combo with correct modifier press/release sequencing.
+
+        Each modifier is sent as its own physical key-down event before the
+        main key, and as a key-up after — with the accumulated flag mask kept
+        consistent on every event.  This is what Krita (and other Qt apps)
+        expect: they track modifier state from the physical key events, not
+        just from the flags field.  Without this the Command key can appear
+        to stay held after a Cmd+Z.
+
+        A 10 ms hold between the last key-down and the first key-up gives the
+        receiving app enough time to process the combo.
+        """
+        # Map flag bits → (virtual keycode, flag bit) in press order
+        mod_map = []
+        if flags & _kCGEventFlagMaskCommand:
+            mod_map.append((_kVK_Command, _kCGEventFlagMaskCommand))
+        if flags & _kCGEventFlagMaskShift:
+            mod_map.append((_kVK_Shift,   _kCGEventFlagMaskShift))
+
+        active_flags = 0
+
+        def _post_key(vk: int, down: bool, f: int) -> None:
+            ev = _cg.CGEventCreateKeyboardEvent(self._src, vk, down)
+            if ev:
+                _cg.CGEventSetFlags(ev, f)
+                _cg.CGEventPost(_kCGHIDEventTap, ev)
+                _cg.CFRelease(ev)
+
+        # Press modifiers
+        for mod_vk, mod_flag in mod_map:
+            active_flags |= mod_flag
+            _post_key(mod_vk, True, active_flags)
+
+        # Key down
+        _post_key(keycode, True, active_flags)
+
+        time.sleep(0.010)   # 10 ms hold — long enough for Krita to register
+
+        # Key up (flags still active until modifiers are released)
+        _post_key(keycode, False, active_flags)
+
+        # Release modifiers in reverse order
+        for mod_vk, mod_flag in reversed(mod_map):
+            active_flags &= ~mod_flag
+            _post_key(mod_vk, False, active_flags)
+
+    def send_shortcut(self, shortcut_id: int) -> None:
+        """Inject a keyboard shortcut on macOS for the given shortcut_id.
+
+        Shortcut IDs (from events.py):
+          1 = Undo          Cmd+Z
+          2 = Redo          Cmd+Shift+Z
+          3 = Brush smaller [
+          4 = Brush bigger  ]
+          5 = Save          Cmd+S
+          6 = Slash         /
+        """
+        from .events import (SHORTCUT_UNDO, SHORTCUT_REDO,
+                             SHORTCUT_BRUSH_SMALLER, SHORTCUT_BRUSH_BIGGER,
+                             SHORTCUT_SAVE, SHORTCUT_SLASH)
+        if shortcut_id == SHORTCUT_UNDO:
+            self._send_key(_kVK_ANSI_Z, _kCGEventFlagMaskCommand)
+        elif shortcut_id == SHORTCUT_REDO:
+            self._send_key(_kVK_ANSI_Z,
+                           _kCGEventFlagMaskCommand | _kCGEventFlagMaskShift)
+        elif shortcut_id == SHORTCUT_BRUSH_SMALLER:
+            self._send_key(_kVK_ANSI_LeftBracket)
+        elif shortcut_id == SHORTCUT_BRUSH_BIGGER:
+            self._send_key(_kVK_ANSI_RightBracket)
+        elif shortcut_id == SHORTCUT_SAVE:
+            self._send_key(_kVK_ANSI_S, _kCGEventFlagMaskCommand)
+        elif shortcut_id == SHORTCUT_SLASH:
+            self._send_key(_kVK_ANSI_Slash)
+        else:
+            log.warning("send_shortcut: unknown shortcut_id %d", shortcut_id)

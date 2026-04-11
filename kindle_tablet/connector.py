@@ -201,6 +201,8 @@ class KindleConnector:
 
         # Monitor rotation changes from tablet-ui
         self._start_rotation_monitor()
+        # Monitor shortcut button presses from tablet-ui
+        self._start_shortcut_monitor()
 
     def _ssh_read_loop(self, device: str, device_type: str,
                        parser: EventParser | None = None) -> None:
@@ -427,6 +429,53 @@ class KindleConnector:
         finally:
             channel.close()
 
+    def _start_shortcut_monitor(self) -> None:
+        """Monitor /tmp/tablet-shortcut for shortcut button presses written by tablet-ui."""
+        t = threading.Thread(target=self._shortcut_monitor_loop,
+                             daemon=True, name="shortcut-monitor")
+        t.start()
+        self._threads.append(t)
+
+    def _shortcut_monitor_loop(self) -> None:
+        """Tail /tmp/tablet-shortcut via SSH and dispatch CTRL_SHORTCUT control events."""
+        from .events import ControlCode
+
+        log.info("Starting shortcut monitor (tailing /tmp/tablet-shortcut)")
+
+        cmd = 'touch /tmp/tablet-shortcut && tail -f /tmp/tablet-shortcut'
+        transport = self._ssh.get_transport()
+        channel = transport.open_session()
+        channel.exec_command(cmd)
+
+        buf = b""
+        try:
+            while self._running:
+                data = channel.recv(256)
+                if not data:
+                    if not self._running:
+                        break
+                    log.warning("Shortcut monitor channel closed")
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        shortcut_id = int(line)
+                        log.info("Shortcut triggered: %d", shortcut_id)
+                        self._dispatch_queue.put(
+                            ("control", ControlCode.CTRL_SHORTCUT, shortcut_id)
+                        )
+                    except ValueError:
+                        pass
+        except Exception as e:
+            if self._running:
+                log.error("Shortcut monitor error: %s", e)
+        finally:
+            channel.close()
+
     def _start_tcp_streaming(self) -> None:
         """Connect to the tablet-daemon running on the Kindle via TCP."""
         stream_port = self.config.kindle.stream_port
@@ -448,6 +497,7 @@ class KindleConnector:
         self._threads.append(t)
 
         self._start_rotation_monitor()
+        self._start_shortcut_monitor()
 
     def _tcp_read_loop(self) -> None:
         """Read events from TCP socket."""
