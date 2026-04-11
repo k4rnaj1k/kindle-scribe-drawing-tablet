@@ -74,26 +74,31 @@ else:
             self._device = None
 
             if hid is None:
-                log.error("The 'hid' module is required. Install with 'pip install hid'.")
-                return
+                raise RuntimeError(
+                    "The 'hid' (hidapi) module is not installed.\n"
+                    "Run:  pip install hidapi"
+                )
 
             # Find the XP-Pen VMulti device (ProductID 47820)
             # We try to find the specific interface that accepts our report.
             devices = hid.enumerate(0, 47820)
             if not devices:
-                log.error("VMulti HID device not found. Ensure XP-Pen driver is installed.")
-                return
+                raise RuntimeError(
+                    "VMulti HID device not found.\n\n"
+                    "Please install the vmulti-bin driver:\n"
+                    "  https://github.com/X9VoiD/vmulti-bin\n\n"
+                    "After installing, restart Kindle Tablet."
+                )
 
             for dev_info in devices:
                 try:
                     d = hid.device()
                     d.open_path(dev_info['path'])
-                    # Test report to see if this is the correct collection (Digitizer)
-                    # We send a dummy 65-byte report. If it returns -1, it's the wrong interface.
+                    # Test report to confirm this is the Digitizer collection.
                     test_report = b'\x40' + (b'\x00' * 64)
                     if d.write(test_report) > 0:
                         self._device = d
-                        log.info(f"Connected to VMulti Digitizer interface: {dev_info['path']}")
+                        log.info("Connected to VMulti Digitizer: %s", dev_info['path'])
                         break
                     else:
                         d.close()
@@ -101,7 +106,10 @@ else:
                     continue
 
             if not self._device:
-                log.error("Could not find a VMulti interface that accepts HID reports.")
+                raise RuntimeError(
+                    "VMulti driver found but could not open the Digitizer HID interface.\n"
+                    "Try running Kindle Tablet as Administrator."
+                )
 
         def _get_buttons(self) -> int:
             """Constructs the button state byte using C# BitPositions.
