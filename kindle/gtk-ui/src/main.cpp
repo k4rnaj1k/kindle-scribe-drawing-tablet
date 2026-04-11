@@ -386,7 +386,7 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
      *                                                                  *
      *  [Undo][Redo][ ][ ][Save]                          [LOCK]        *
      *                                                                  */
-    double top_sz  = 64.0;   /* square button size */
+    double top_sz  = 80.0;   /* square button size */
     double top_mar = 16.0;   /* screen edge margin  */
     double top_gap = 10.0;   /* gap between buttons */
     double top_y   = top_mar;
@@ -464,7 +464,14 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     g_rect_exit.y = bottom - btn_h;
     g_rect_exit.w = btn_w;
     g_rect_exit.h = btn_h;
-    draw_button(cr, &g_rect_exit, "Exit Tablet Mode", g_exit_pressed, FALSE);
+    if (g_locked) {
+        cairo_push_group(cr);
+        draw_button(cr, &g_rect_exit, "Exit Tablet Mode", g_exit_pressed, FALSE);
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.30);
+    } else {
+        draw_button(cr, &g_rect_exit, "Exit Tablet Mode", g_exit_pressed, FALSE);
+    }
 
     /* Rotate button (above exit) */
     g_rect_rotate.x = btn_x;
@@ -474,7 +481,14 @@ static void do_draw(cairo_t *cr, int draw_w, int draw_h)
     const char *rotate_label = (g_rotation == 0)
         ? "Rotate \xe2\x86\xba Landscape"   /* UTF-8 ↺ */
         : "Rotate \xe2\x86\xba Portrait";
-    draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed, FALSE);
+    if (g_locked) {
+        cairo_push_group(cr);
+        draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed, FALSE);
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.30);
+    } else {
+        draw_button(cr, &g_rect_rotate, rotate_label, g_rotate_pressed, FALSE);
+    }
 }
 
 static gboolean on_expose(GtkWidget *widget, GdkEventExpose *, gpointer)
