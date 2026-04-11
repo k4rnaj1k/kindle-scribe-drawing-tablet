@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # packaging/macos/build.sh
-# Builds "Kindle Tablet.app" for macOS using py2app.
+# Builds "Kindle Tablet.app" for macOS using PyInstaller.
 #
 # Usage:
 #   cd /path/to/kindle-scribe-drawing-tablet
@@ -19,17 +19,17 @@ python3 --version
 
 echo "==> Installing/upgrading build dependencies…"
 pip install --quiet --upgrade pip
-pip install --quiet "py2app" "Pillow>=10" "pystray>=0.19"
+pip install --quiet "pyinstaller" "Pillow>=10" "pystray>=0.19"
 pip install --quiet -e ".[all]"
 
 echo "==> Generating .icns icon…"
 python3 packaging/macos/make_icon.py
 
-echo "==> Cleaning previous build artefacts…"
-rm -rf packaging/macos/build packaging/macos/dist
+echo "==> Cleaning previous artefacts…"
+rm -rf "dist/Kindle Tablet.app" "dist/Kindle Tablet"
 
-echo "==> Running py2app…"
-python3 packaging/macos/build_app.py py2app --dist-dir dist
+echo "==> Running PyInstaller…"
+pyinstaller packaging/macos/kindle_tablet.spec --noconfirm
 
 echo ""
 echo "✅  Done!  App bundle: dist/Kindle Tablet.app"

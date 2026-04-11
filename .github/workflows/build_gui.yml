@@ -23,14 +23,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install py2app Pillow pystray
+          pip install pyinstaller Pillow pystray
           pip install -e ".[all]"
 
       - name: Generate icon
         run: python packaging/macos/make_icon.py
 
-      - name: Build .app with py2app
-        run: python packaging/macos/build_app.py py2app --dist-dir dist
+      - name: Build .app with PyInstaller
+        run: pyinstaller packaging/macos/kindle_tablet.spec --noconfirm
 
       - name: Zip the .app
         run: |
