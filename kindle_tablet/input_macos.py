@@ -49,6 +49,7 @@ import ctypes
 import ctypes.util
 import logging
 import sys
+import time
 
 log = logging.getLogger(__name__)
 
