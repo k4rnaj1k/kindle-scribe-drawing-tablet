@@ -30,9 +30,8 @@ a = Analysis(
         "bcrypt",
         # macOS input backend
         "kindle_tablet.input_macos",
-        # System-tray
-        "pystray",
-        "pystray._darwin",
+        # pystray is intentionally disabled on macOS (AppKit thread conflict);
+        # Pillow is still used for the window icon.
         "PIL",
         "PIL.Image",
         "PIL.ImageDraw",

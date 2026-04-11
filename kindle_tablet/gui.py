@@ -38,7 +38,12 @@ from .main import (
 )
 
 # ── optional system-tray support ─────────────────────────────────────────────
+# Disabled on macOS: pystray's Darwin backend calls AppKit from a background
+# thread which crashes when tkinter already owns the main thread.
+# On macOS the Dock icon serves the same purpose.
 try:
+    if sys.platform == "darwin":
+        raise ImportError("tray disabled on macOS")
     import pystray
     from PIL import Image as PILImage, ImageDraw
 
