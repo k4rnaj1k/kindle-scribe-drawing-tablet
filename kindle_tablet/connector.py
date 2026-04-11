@@ -52,6 +52,9 @@ class KindleConnector:
         self._threads: list[threading.Thread] = []
         self.parser = EventParser(arch_bits=32)
         self._dispatch_queue: queue.Queue = queue.Queue()
+        # Monitor channels kept so stop() can close them and unblock recv()
+        self._rotation_channel = None
+        self._shortcut_channel = None
 
     def connect(self) -> None:
         """Establish SSH connection to the Kindle."""
@@ -398,6 +401,7 @@ class KindleConnector:
         transport = self._ssh.get_transport()
         channel = transport.open_session()
         channel.exec_command(cmd)
+        self._rotation_channel = channel
 
         buf = b""
         try:
@@ -446,6 +450,7 @@ class KindleConnector:
         transport = self._ssh.get_transport()
         channel = transport.open_session()
         channel.exec_command(cmd)
+        self._shortcut_channel = channel
 
         buf = b""
         try:
@@ -570,7 +575,30 @@ class KindleConnector:
         """Stop streaming and disconnect."""
         self._running = False
 
-        # If in TCP mode, kill the daemon on the Kindle
+        # Close monitor channels first — this unblocks the recv() calls in the
+        # monitor loops immediately, so the threads exit cleanly without waiting
+        # for the 3-second join timeout.
+        for ch_attr in ("_rotation_channel", "_shortcut_channel"):
+            ch = getattr(self, ch_attr, None)
+            if ch is not None:
+                try:
+                    ch.close()
+                except Exception:
+                    pass
+                setattr(self, ch_attr, None)
+
+        # Kill the remote tail processes on the Kindle so they don't linger
+        # after the SSH session ends (dropbear doesn't reliably send SIGHUP).
+        if self._ssh:
+            try:
+                self._ssh.exec_command(
+                    "pkill -f 'tail.*tablet-rotation' 2>/dev/null; "
+                    "pkill -f 'tail.*tablet-shortcut' 2>/dev/null"
+                )
+            except Exception:
+                pass
+
+        # If in TCP mode, also kill the streaming daemon
         if self.config.mode == "tcp" and self._ssh:
             try:
                 self._ssh.exec_command("pkill -f 'tablet-daemon' 2>/dev/null")
