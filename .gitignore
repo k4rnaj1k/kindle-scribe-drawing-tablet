@@ -1,5 +1,9 @@
 .DS_Store
 
+# Compiled Kindle binaries — built by CI, deployed via download-and-deploy.sh
+kindle/bin/tablet-daemon
+kindle/bin/tablet-ui
+
 .claude
 .venv/
 __pycache__/
