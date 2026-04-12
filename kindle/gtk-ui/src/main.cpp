@@ -38,6 +38,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <linux/input.h>
+#include <cerrno>
 
 /* ------------------------------------------------------------------ */
 /*  Configuration — all tuneable defaults in one place.               */
@@ -48,6 +49,10 @@ static char g_rotation_file[256] = "/tmp/tablet-rotation";
 static char g_shortcut_file[256] = "/tmp/tablet-shortcut";
 static int  g_tcp_port           = 8234;
 static char g_tcp_device[256]    = "";  /* empty = auto-detect */
+
+/* Forward declaration — defined later in "Consolidated initialization
+ * and shutdown" section; needed by on_button_release. */
+static void app_shutdown(void);
 
 /* ------------------------------------------------------------------ */
 /*  Runtime state                                                     */
