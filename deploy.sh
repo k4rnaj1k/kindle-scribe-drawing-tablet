@@ -47,7 +47,7 @@ scp $SCP_OPTS "$KINDLE_DIR/kual/kindle-tablet/bin/stop.sh" \
 scp $SCP_OPTS "$KINDLE_DIR/kual/kindle-tablet/bin/status.sh" \
     "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
 
-# Copy tablet-ui binary (GTK UI app)
+# Copy tablet-ui binary (GTK UI + TCP event streaming, single binary)
 if [ -f "$KINDLE_DIR/bin/tablet-ui" ]; then
     echo "Copying tablet-ui binary..."
     scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-ui" \
@@ -55,15 +55,6 @@ if [ -f "$KINDLE_DIR/bin/tablet-ui" ]; then
 else
     echo "WARNING: tablet-ui binary not found!"
     echo "  Build it first:  make -C kindle gtk-ui MESON_CROSS=<path>"
-fi
-
-# Copy tablet-daemon binary (TCP event streaming server)
-if [ -f "$KINDLE_DIR/bin/tablet-daemon" ]; then
-    echo "Copying tablet-daemon binary..."
-    scp $SCP_OPTS "$KINDLE_DIR/bin/tablet-daemon" \
-        "$SSH_USER@$KINDLE_IP:/mnt/us/extensions/kindle-tablet/bin/"
-else
-    echo "WARNING: tablet-daemon binary not found (TCP mode will not work)"
 fi
 
 # Make everything executable

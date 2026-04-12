@@ -1,9 +1,10 @@
 #!/bin/sh
 # tablet-mode.sh - Kindle Tablet Mode
 #
-# Disables Pillow and screensaver, launches the tablet-ui GTK app
-# which shows an "Exit Tablet Mode" button. Awesome WM stays running
-# so the GTK window can be managed normally.
+# Disables Pillow and screensaver, then launches tablet-ui which handles
+# both the GTK interface and TCP event streaming in a single process.
+# (TCP streaming was formerly a separate tablet-daemon binary.)
+# Awesome WM stays running so the GTK window can be managed normally.
 #
 # On exit, restores Pillow and screensaver.
 #
@@ -12,7 +13,7 @@
 ACTION="${1:-start}"
 MARKER="/tmp/tablet-mode-active"
 EXT_DIR="/mnt/us/extensions/kindle-tablet"
-DAEMON_PORT=8234
+TCP_PORT=8234
 
 # ---- Framework control ----
 
@@ -23,8 +24,8 @@ freeze_framework() {
     # Prevent screensaver from blanking the display
     lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 
-    # Open TCP port for tablet-daemon
-    iptables -A INPUT -i wlan0 -p tcp --dport "$DAEMON_PORT" -j ACCEPT 2>/dev/null
+    # Open TCP port for tablet-ui's built-in event streaming server
+    iptables -A INPUT -i wlan0 -p tcp --dport "$TCP_PORT" -j ACCEPT 2>/dev/null
 }
 
 thaw_framework() {
@@ -35,7 +36,7 @@ thaw_framework() {
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
 
     # Close TCP port
-    iptables -D INPUT -i wlan0 -p tcp --dport "$DAEMON_PORT" -j ACCEPT 2>/dev/null
+    iptables -D INPUT -i wlan0 -p tcp --dport "$TCP_PORT" -j ACCEPT 2>/dev/null
 }
 
 # ---- Start ----
@@ -52,43 +53,23 @@ start_tablet_mode() {
 
     freeze_framework
 
-    # Auto-detect pen device
-    PEN_DEVICE=""
-    for name_file in /sys/class/input/event*/device/name; do
-        name=$(cat "$name_file" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-        case "$name" in
-            *wacom*|*stylus*|*ntx_event*|*digitizer*|*pen*)
-                evdev=$(echo "$name_file" | sed 's|/sys/class/input/\(event[0-9]*\)/.*|\1|')
-                PEN_DEVICE="/dev/input/$evdev"
-                break
-                ;;
-        esac
-    done
+    # Launch tablet-ui: handles the GTK interface, pen proximity filtering,
+    # and TCP event streaming all in one process.  Device auto-detection and
+    # the TCP server are managed internally — no separate daemon needed.
+    "$EXT_DIR/bin/tablet-ui" \
+        --marker-file "$MARKER" \
+        --port "$TCP_PORT" &
+    UI_PID=$!
 
-    if [ -n "$PEN_DEVICE" ]; then
-        "$EXT_DIR/bin/tablet-daemon" "$PEN_DEVICE" "$DAEMON_PORT" \
-            > /tmp/tablet-daemon.log 2>&1 &
-        DAEMON_PID=$!
-        echo "tablet-daemon started (pid=$DAEMON_PID, device=$PEN_DEVICE, port=$DAEMON_PORT)"
-    else
-        echo "WARNING: could not auto-detect pen device, tablet-daemon not started"
-        DAEMON_PID=""
-    fi
-
-    # Launch the GTK UI app (shows exit button)
-    "$EXT_DIR/bin/tablet-ui" --marker-file "$MARKER" &
-    GTK_PID=$!
-
-    echo "Tablet mode running (GTK UI pid=$GTK_PID)"
+    echo "Tablet mode running (tablet-ui pid=$UI_PID, port=$TCP_PORT)"
 
     # Wait until the marker is removed.
-    # tablet-ui removes it when exit button is tapped.
+    # tablet-ui removes it when the exit button is tapped.
     # 'stop' action also removes it.
     while [ -f "$MARKER" ]; do sleep 1; done
 
-    # Clean up GTK app and daemon if still running
-    kill "$GTK_PID" 2>/dev/null
-    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
+    # Clean up UI process if still running
+    kill "$UI_PID" 2>/dev/null
 
     do_stop
 }
@@ -97,11 +78,15 @@ start_tablet_mode() {
 
 do_stop() {
     rm -f "$MARKER"
-    rm -f /tmp/tablet-rotation
 
-    # Kill UI and daemon if still running
+    # Safety-net cleanup of IPC files.
+    # tablet-ui normally removes these itself via app_shutdown(); these
+    # rm calls handle the case where the process was killed abnormally.
+    rm -f /tmp/tablet-rotation
+    rm -f /tmp/tablet-shortcut
+
+    # Kill UI if still running
     pkill -f "tablet-ui" 2>/dev/null
-    pkill -f "tablet-daemon" 2>/dev/null
 
     # Restore framework
     thaw_framework
