@@ -482,18 +482,18 @@ class KindleConnector:
             channel.close()
 
     def _start_tcp_streaming(self) -> None:
-        """Connect to the tablet-daemon running on the Kindle via TCP."""
+        """Connect to tablet-ui's built-in TCP event server on the Kindle."""
         stream_port = self.config.kindle.stream_port
-        pen_device = self.config.pen_device
 
-        # Start the daemon only if it is not already running (e.g. launched by
-        # tablet-mode.sh).  Always log to /tmp/tablet-daemon.log so errors are
-        # visible on the Kindle.
-        log.info("Ensuring tablet-daemon is running on Kindle (port %d)...", stream_port)
+        # tablet-ui now handles both the GTK interface and TCP event streaming
+        # in a single process (tablet-daemon was merged into it).  If tablet-ui
+        # is not already running (e.g. launched by tablet-mode.sh / KUAL), start
+        # it with --port so the TCP server binds on the expected port.
+        log.info("Ensuring tablet-ui is running on Kindle (port %d)...", stream_port)
         self._ssh.exec_command(
-            f"pgrep -f 'tablet-daemon' > /dev/null 2>&1 || "
-            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-daemon "
-            f"{pen_device} {stream_port} >> /tmp/tablet-daemon.log 2>&1 &"
+            f"pgrep -f 'tablet-ui' > /dev/null 2>&1 || "
+            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-ui "
+            f"--port {stream_port} >> /tmp/tablet-ui.log 2>&1 &"
         )
         time.sleep(1)  # Give the server a moment to start if it wasn't running
 
@@ -505,11 +505,11 @@ class KindleConnector:
         self._start_shortcut_monitor()
 
     def _tcp_read_loop(self) -> None:
-        """Read events from TCP socket."""
+        """Read events from tablet-ui's TCP event server."""
         host = self.config.kindle.host
         port = self.config.kindle.stream_port
 
-        log.info("Connecting to tablet-daemon at %s:%d...", host, port)
+        log.info("Connecting to tablet-ui TCP server at %s:%d...", host, port)
         retries = 5
         sock = None
         for attempt in range(retries):
@@ -520,7 +520,7 @@ class KindleConnector:
                 s.settimeout(None)
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock = s
-                log.info("Connected to tablet-daemon.")
+                log.info("Connected to tablet-ui TCP server.")
                 break
             except (ConnectionRefusedError, socket.timeout):
                 s.close()
@@ -529,7 +529,7 @@ class KindleConnector:
                 time.sleep(1)
 
         if sock is None:
-            log.error("Could not connect to tablet-daemon")
+            log.error("Could not connect to tablet-ui TCP server")
             return
 
         parser = self.parser
@@ -598,10 +598,10 @@ class KindleConnector:
             except Exception:
                 pass
 
-        # If in TCP mode, also kill the streaming daemon
+        # If in TCP mode and we started tablet-ui ourselves, stop it
         if self.config.mode == "tcp" and self._ssh:
             try:
-                self._ssh.exec_command("pkill -f 'tablet-daemon' 2>/dev/null")
+                self._ssh.exec_command("pkill -f 'tablet-ui' 2>/dev/null")
             except Exception:
                 pass
 
