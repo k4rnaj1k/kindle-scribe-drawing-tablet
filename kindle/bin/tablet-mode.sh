@@ -48,8 +48,11 @@ start_tablet_mode() {
 
     echo "Starting tablet mode"
 
-    # Write marker before anything else so stop works even if we crash
-    echo "active" > "$MARKER"
+    # Write our PID into the marker so we can detect when a NEW start has
+    # taken over (avoids the stale-process race where the first start's
+    # cleanup kills a second session that launched in the meantime).
+    MY_ID="$$"
+    echo "$MY_ID" > "$MARKER"
 
     freeze_framework
 
@@ -63,15 +66,22 @@ start_tablet_mode() {
 
     echo "Tablet mode running (tablet-ui pid=$UI_PID, port=$TCP_PORT)"
 
-    # Wait until the marker is removed.
+    # Wait until the marker is removed OR taken over by a new instance.
     # tablet-ui removes it when the exit button is tapped.
     # 'stop' action also removes it.
-    while [ -f "$MARKER" ]; do sleep 1; done
+    # A new 'start' overwrites it with a different PID.
+    while [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$MY_ID" ]; do
+        sleep 1
+    done
 
-    # Clean up UI process if still running
-    kill "$UI_PID" 2>/dev/null
-
-    do_stop
+    # Only clean up if we still own the marker (or it was deleted, meaning
+    # stop/exit was called).  If a new instance wrote a different PID, it
+    # owns the session now — we must not interfere.
+    CURRENT_OWNER=$(cat "$MARKER" 2>/dev/null)
+    if [ -z "$CURRENT_OWNER" ] || [ "$CURRENT_OWNER" = "$MY_ID" ]; then
+        kill "$UI_PID" 2>/dev/null
+        do_stop
+    fi
 }
 
 # ---- Stop ----
