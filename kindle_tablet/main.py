@@ -113,8 +113,13 @@ class TabletHandler:
         maintaining proportions (like Wacom 'force proportions' mode).
         """
         tc = self.config.tablet
-        kw = tc.kindle_max_x
-        kh = tc.kindle_max_y
+        
+        if self._rotation == 90:
+            kw = self._original_max_y
+            kh = self._original_max_x
+        else:
+            kw = self._original_max_x
+            kh = self._original_max_y
 
         # Screen region in pixels
         rx, ry, rw, rh = tc.screen_region
@@ -227,16 +232,12 @@ class TabletHandler:
             tc = self.config.tablet
             if value == 90:
                 # Landscape: swap effective dimensions for aspect ratio mapping
-                tc.kindle_max_x = self._original_max_y
-                tc.kindle_max_y = self._original_max_x
                 log.info("Rotation: landscape (effective %dx%d)",
-                         tc.kindle_max_x, tc.kindle_max_y)
+                         self._original_max_y, self._original_max_x)
             else:
                 # Portrait: restore original
-                tc.kindle_max_x = self._original_max_x
-                tc.kindle_max_y = self._original_max_y
                 log.info("Rotation: portrait (effective %dx%d)",
-                         tc.kindle_max_x, tc.kindle_max_y)
+                         self._original_max_x, self._original_max_y)
             self._compute_mapping()
         elif code == ControlCode.CTRL_SHORTCUT:
             shortcut_names = {
