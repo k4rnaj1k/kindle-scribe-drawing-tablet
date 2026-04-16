@@ -772,8 +772,17 @@ class KindleTabletApp(tk.Tk):
 
         try:
             connector.start_streaming()
-            handler._original_max_x = cfg.tablet.kindle_max_x
-            handler._original_max_y = cfg.tablet.kindle_max_y
+            # Use raw caps saved before threads start (same race fix as main.py):
+            # the rotation monitor may fire on_control(CTRL_ROTATION, 90) before
+            # we reach here, swapping cfg.tablet.kindle_max_x/y in-place and
+            # corrupting _original_max_x/y → all landscape inputs bottom-left,
+            # all portrait inputs top-left after switching back.
+            if connector.raw_pen_max_x:
+                handler._original_max_x = connector.raw_pen_max_x
+                handler._original_max_y = connector.raw_pen_max_y
+            else:
+                handler._original_max_x = cfg.tablet.kindle_max_x
+                handler._original_max_y = cfg.tablet.kindle_max_y
             handler._compute_mapping()
         except Exception as e:
             connector.stop()
