@@ -406,9 +406,21 @@ def main() -> None:
     try:
         connector.start_streaming()
 
-        # Refresh handler's original axis limits now that device caps are read
-        handler._original_max_x = cfg.tablet.kindle_max_x
-        handler._original_max_y = cfg.tablet.kindle_max_y
+        # Refresh handler's original (portrait) axis limits from the raw caps
+        # saved by update_config_from_device() *before* the rotation monitor
+        # thread started.  Reading cfg.tablet.kindle_max_x/y here instead would
+        # race: if the device is already in landscape mode the rotation monitor
+        # fires on_control(CTRL_ROTATION, 90) concurrently and swaps those
+        # values in-place, corrupting _original_max_x/y and pushing all
+        # landscape coordinates to the bottom-left corner of the screen.
+        if connector.raw_pen_max_x:
+            handler._original_max_x = connector.raw_pen_max_x
+            handler._original_max_y = connector.raw_pen_max_y
+        else:
+            # Caps were not auto-detected (kept defaults); still safe to refresh
+            # because no rotation swap could have happened without real caps.
+            handler._original_max_x = cfg.tablet.kindle_max_x
+            handler._original_max_y = cfg.tablet.kindle_max_y
         handler._compute_mapping()
 
         print("\n  Kindle Tablet active!")

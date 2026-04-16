@@ -52,6 +52,13 @@ class KindleConnector:
         self._threads: list[threading.Thread] = []
         self.parser = EventParser(arch_bits=32)
         self._dispatch_queue: queue.Queue = queue.Queue()
+        # Raw digitizer caps as detected by update_config_from_device(), saved
+        # before any rotation event can swap tc.kindle_max_x/y in-place.
+        # main.py reads these to initialise handler._original_max_x/y so that
+        # a landscape rotation firing before the main thread gets there cannot
+        # corrupt those baseline values.
+        self.raw_pen_max_x: int = 0
+        self.raw_pen_max_y: int = 0
         # Monitor channels kept so stop() can close them and unblock recv()
         self._rotation_channel = None
         self._shortcut_channel = None
@@ -161,8 +168,10 @@ class KindleConnector:
             tc = self.config.tablet
             if "x" in caps:
                 tc.kindle_max_x = caps["x"][1]
+                self.raw_pen_max_x = caps["x"][1]   # save before rotation can swap
             if "y" in caps:
                 tc.kindle_max_y = caps["y"][1]
+                self.raw_pen_max_y = caps["y"][1]   # save before rotation can swap
             if "pressure" in caps:
                 tc.kindle_max_pressure = caps["pressure"][1]
             log.info("Updated config from device caps: max_x=%d, max_y=%d, max_pressure=%d",
