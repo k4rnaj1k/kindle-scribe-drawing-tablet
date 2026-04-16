@@ -90,6 +90,7 @@ else:
             self._left_down = False
             self._right_down = False
             self._eraser_active = False
+            self._in_range = False   # True only while pen is in proximity
             self._device = None
 
             if hid is None:
@@ -136,8 +137,10 @@ else:
             Eraser end proximity sets Invert; eraser contact uses Eraser bit
             (not Press) so Windows Ink recognises it as the eraser tool.
             Regular tip contact uses Press as before.
+            InRange is only set while the pen is actually in proximity;
+            clearing it lets Windows Ink hide the hover cursor on pen_leave.
             """
-            buttons = (1 << BitPositions.InRange)
+            buttons = (1 << BitPositions.InRange) if self._in_range else 0
             if self._eraser_active:
                 buttons |= (1 << BitPositions.Invert)
                 if self._left_down:
@@ -190,6 +193,7 @@ else:
                  eraser: bool = False) -> None:
             """Move cursor to (x, y)."""
             self._eraser_active = eraser
+            self._in_range = True
             self._send_report(x, y, pressure, self._get_buttons())
 
         def pen_down(self, x: float, y: float, pressure: float = 0.5,
@@ -197,14 +201,23 @@ else:
                      eraser: bool = False) -> None:
             """Pen contact initiated."""
             self._eraser_active = eraser
+            self._in_range = True
             self._left_down = True
             self._send_report(x, y, pressure, self._get_buttons())
 
         def pen_up(self, x: float, y: float) -> None:
-            """Pen contact lifted."""
+            """Pen contact lifted (pen may still be hovering in range)."""
             self._left_down = False
             self._send_report(x, y, 0.0, self._get_buttons())
             self._eraser_active = False
+
+        def pen_leave(self, x: float, y: float) -> None:
+            """Pen left proximity - clears InRange so Windows Ink hides the cursor."""
+            if self._left_down:
+                self.pen_up(x, y)
+            self._in_range = False
+            self._eraser_active = False
+            self._send_report(x, y, 0.0, self._get_buttons())
 
         def button_down(self, x: float, y: float) -> None:
             """Right click / Barrel button down."""

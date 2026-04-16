@@ -179,19 +179,19 @@ class TabletHandler:
     def on_pen(self, pen: PenState) -> None:
         """Handle a pen state update."""
         if not pen.in_range:
-            # Pen left proximity entirely - send leave so macOS clears the device
+            # Pen left proximity entirely.  Compute coords once, then explicitly
+            # lift pen/button before signalling the leave so every backend
+            # (including Windows, which has no implicit pen_up inside pen_leave)
+            # receives a clean pen_up before InRange is cleared.
+            x, y = self.map_coords(pen.x, pen.y)
             if self._pen_was_touching:
-                x, y = self.map_coords(pen.x, pen.y)
+                self.backend.pen_up(x, y)
                 self._pen_was_touching = False
             if self._pen_was_button1:
-                x, y = self.map_coords(pen.x, pen.y)
                 self.backend.button_up(x, y)
                 self._pen_was_button1 = False
-            x, y = self.map_coords(pen.x, pen.y)
             if hasattr(self.backend, "pen_leave"):
                 self.backend.pen_leave(x, y)
-            else:
-                self.backend.pen_up(x, y)
             return
 
         x, y = self.map_coords(pen.x, pen.y)

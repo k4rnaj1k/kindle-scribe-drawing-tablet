@@ -563,7 +563,9 @@ class KindleConnector:
 
                 events = parser.feed(data)
                 for ev in events:
-                    if ev == "pen":
+                    if isinstance(ev, tuple) and ev[0] == "control":
+                        self._dispatch_queue.put(("control", ev[1], ev[2]))
+                    elif ev == "pen":
                         self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
         except Exception as e:
             if self._running:
