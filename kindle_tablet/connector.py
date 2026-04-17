@@ -493,18 +493,34 @@ class KindleConnector:
     def _start_tcp_streaming(self) -> None:
         """Connect to tablet-ui's built-in TCP event server on the Kindle."""
         stream_port = self.config.kindle.stream_port
+        pen_device  = self.config.pen_device
 
-        # tablet-ui now handles both the GTK interface and TCP event streaming
-        # in a single process (tablet-daemon was merged into it).  If tablet-ui
-        # is not already running (e.g. launched by tablet-mode.sh / KUAL), start
-        # it with --port so the TCP server binds on the expected port.
-        log.info("Ensuring tablet-ui is running on Kindle (port %d)...", stream_port)
+        # tablet-ui auto-detects the pen evdev node via readdir(), whose order
+        # differs from the host's lexicographic shell glob in
+        # auto_detect_pen_device().  On a Scribe with multiple matching nodes
+        # (e.g. an ntx_event sensor *and* the wacom_i2c digitizer) the two
+        # detections can disagree → the host reads caps from device A while
+        # tablet-ui streams events from device B.  Raw values from B get
+        # scaled by A's much larger max_x/max_y, collapsing every coordinate
+        # into the bottom-left corner of the screen.
+        #
+        # Fix: always pass --device explicitly so both sides agree.  If
+        # tablet-ui is already running without our --device argument (e.g.
+        # launched by tablet-mode.sh / KUAL), kill it and restart with the
+        # correct device.  If it's already running with our exact --device,
+        # leave it alone — no GTK flicker.
+        log.info("Ensuring tablet-ui is streaming from %s on port %d...",
+                 pen_device, stream_port)
         self._ssh.exec_command(
-            f"pgrep -f 'tablet-ui' > /dev/null 2>&1 || "
-            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-ui "
-            f"--port {stream_port} >> /tmp/tablet-ui.log 2>&1 &"
+            f"if ! pgrep -f 'tablet-ui.*--device {pen_device}' > /dev/null 2>&1; then "
+            f"  pkill -f 'tablet-ui' 2>/dev/null; "
+            f"  sleep 0.3; "
+            f"  nohup /mnt/us/extensions/kindle-tablet/bin/tablet-ui "
+            f"  --device {pen_device} "
+            f"  --port {stream_port} >> /tmp/tablet-ui.log 2>&1 & "
+            f"fi"
         )
-        time.sleep(1)  # Give the server a moment to start if it wasn't running
+        time.sleep(1)  # Give the server a moment to (re)start
 
         t = threading.Thread(target=self._tcp_read_loop, daemon=True, name="tcp-reader")
         t.start()

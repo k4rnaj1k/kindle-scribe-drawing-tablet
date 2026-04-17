@@ -15,6 +15,28 @@ MARKER="/tmp/tablet-mode-active"
 EXT_DIR="/mnt/us/extensions/kindle-tablet"
 TCP_PORT=8234
 
+# ---- Pen device detection ----
+#
+# Mirrors the host's auto_detect_pen_device() (lexicographic shell glob over
+# /sys/class/input/event*) so tablet-ui streams from the same evdev node the
+# host will read caps from.  Without this, tablet-ui's internal readdir()
+# auto-detect can pick a different node (e.g. ntx_event sensor instead of
+# wacom_i2c digitizer) → coordinates stream with the wrong axis ranges and
+# every event lands in the bottom-left corner of the host screen.
+detect_pen_device() {
+    for dev in /sys/class/input/event*/device; do
+        [ -e "$dev/name" ] || continue
+        evdev=$(basename $(dirname "$dev"))
+        name=$(cat "$dev/name" 2>/dev/null | tr 'A-Z' 'a-z')
+        for kw in wacom stylus pen digitizer ntx_event; do
+            case "$name" in
+                *"$kw"*) echo "/dev/input/$evdev"; return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+
 # ---- Framework control ----
 
 freeze_framework() {
@@ -57,11 +79,21 @@ start_tablet_mode() {
     freeze_framework
 
     # Launch tablet-ui: handles the GTK interface, pen proximity filtering,
-    # and TCP event streaming all in one process.  Device auto-detection and
-    # the TCP server are managed internally — no separate daemon needed.
-    "$EXT_DIR/bin/tablet-ui" \
-        --marker-file "$MARKER" \
-        --port "$TCP_PORT" &
+    # and TCP event streaming all in one process.  Pass --device explicitly
+    # (using the same lexicographic order the host uses) so the streamed
+    # events come from the same evdev node whose caps the host will read.
+    PEN_DEVICE=$(detect_pen_device)
+    if [ -n "$PEN_DEVICE" ]; then
+        "$EXT_DIR/bin/tablet-ui" \
+            --marker-file "$MARKER" \
+            --device "$PEN_DEVICE" \
+            --port "$TCP_PORT" &
+    else
+        echo "Warning: no pen device detected; falling back to tablet-ui auto-detect"
+        "$EXT_DIR/bin/tablet-ui" \
+            --marker-file "$MARKER" \
+            --port "$TCP_PORT" &
+    fi
     UI_PID=$!
 
     echo "Tablet mode running (tablet-ui pid=$UI_PID, port=$TCP_PORT)"
