@@ -62,15 +62,35 @@ else:
         Invert = 3
         InRange = 4
 
+    # GetSystemMetrics constants for virtual screen (all monitors combined)
+    _SM_XVIRTUALSCREEN  = 76
+    _SM_YVIRTUALSCREEN  = 77
+    _SM_CXVIRTUALSCREEN = 78
+    _SM_CYVIRTUALSCREEN = 79
+
     class WindowsInput:
         """Injects pen/mouse events on Windows using VMulti HID."""
 
         def __init__(self):
             self.screen_width = user32.GetSystemMetrics(0)
             self.screen_height = user32.GetSystemMetrics(1)
+
+            # VMulti absolute coordinates (0-32767) map to the full virtual
+            # desktop (all monitors), not just the primary monitor.  We need
+            # the virtual screen origin and size to convert correctly.
+            self._virt_x = user32.GetSystemMetrics(_SM_XVIRTUALSCREEN)
+            self._virt_y = user32.GetSystemMetrics(_SM_YVIRTUALSCREEN)
+            self._virt_w = user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN) or self.screen_width
+            self._virt_h = user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN) or self.screen_height
+            log.info("Primary monitor: %dx%d  Virtual desktop: %dx%d at (%d,%d)",
+                     self.screen_width, self.screen_height,
+                     self._virt_w, self._virt_h,
+                     self._virt_x, self._virt_y)
+
             self._left_down = False
             self._right_down = False
             self._eraser_active = False
+            self._in_range = False   # True only while pen is in proximity
             self._device = None
 
             if hid is None:
@@ -117,8 +137,10 @@ else:
             Eraser end proximity sets Invert; eraser contact uses Eraser bit
             (not Press) so Windows Ink recognises it as the eraser tool.
             Regular tip contact uses Press as before.
+            InRange is only set while the pen is actually in proximity;
+            clearing it lets Windows Ink hide the hover cursor on pen_leave.
             """
-            buttons = (1 << BitPositions.InRange)
+            buttons = (1 << BitPositions.InRange) if self._in_range else 0
             if self._eraser_active:
                 buttons |= (1 << BitPositions.Invert)
                 if self._left_down:
@@ -135,9 +157,13 @@ else:
             if not self._device:
                 return
 
-            # Map coordinates (0-32767) and pressure (0-8191) per C# logic
-            abs_x = max(0, min(32767, int((x / self.screen_width) * 32767)))
-            abs_y = max(0, min(32767, int((y / self.screen_height) * 32767)))
+            # Map coordinates (0-32767) and pressure (0-8191) per C# logic.
+            # x/y are in primary-monitor pixel coordinates (from TabletHandler).
+            # VMulti absolute coords span the full virtual desktop, so we must
+            # offset by the virtual screen origin to place the cursor correctly
+            # on multi-monitor setups.
+            abs_x = max(0, min(32767, int(((x - self._virt_x) / self._virt_w) * 32767)))
+            abs_y = max(0, min(32767, int(((y - self._virt_y) / self._virt_h) * 32767)))
             abs_pressure = max(0, min(8191, int(pressure * 8191)))
 
             # 10-byte struct from C#
@@ -167,6 +193,7 @@ else:
                  eraser: bool = False) -> None:
             """Move cursor to (x, y)."""
             self._eraser_active = eraser
+            self._in_range = True
             self._send_report(x, y, pressure, self._get_buttons())
 
         def pen_down(self, x: float, y: float, pressure: float = 0.5,
@@ -174,14 +201,23 @@ else:
                      eraser: bool = False) -> None:
             """Pen contact initiated."""
             self._eraser_active = eraser
+            self._in_range = True
             self._left_down = True
             self._send_report(x, y, pressure, self._get_buttons())
 
         def pen_up(self, x: float, y: float) -> None:
-            """Pen contact lifted."""
+            """Pen contact lifted (pen may still be hovering in range)."""
             self._left_down = False
             self._send_report(x, y, 0.0, self._get_buttons())
             self._eraser_active = False
+
+        def pen_leave(self, x: float, y: float) -> None:
+            """Pen left proximity - clears InRange so Windows Ink hides the cursor."""
+            if self._left_down:
+                self.pen_up(x, y)
+            self._in_range = False
+            self._eraser_active = False
+            self._send_report(x, y, 0.0, self._get_buttons())
 
         def button_down(self, x: float, y: float) -> None:
             """Right click / Barrel button down."""

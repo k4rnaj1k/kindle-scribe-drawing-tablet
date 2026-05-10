@@ -220,22 +220,23 @@ _CAPABILITY_MASK   = 0x00FE
 def require_accessibility() -> None:
     if _as.AXIsProcessTrusted():
         return
-    print(
+    msg = (
+        "Accessibility permission required for pressure sensitivity.\n"
         "\n"
-        "  ERROR: Accessibility permission required for pressure sensitivity.\n"
+        "macOS strips tablet pressure data from injected events unless the\n"
+        "injecting process has Accessibility access.\n"
         "\n"
-        "  macOS strips tablet pressure data from injected events unless the\n"
-        "  injecting process has Accessibility access.\n"
+        "Fix:\n"
+        "  System Settings -> Privacy & Security -> Accessibility\n"
+        "  -> click + and add Terminal (or your terminal app)\n"
+        "  -> re-run kindle-tablet\n"
         "\n"
-        "  Fix:\n"
-        "    System Settings -> Privacy & Security -> Accessibility\n"
-        "    -> click + and add Terminal (or your terminal app)\n"
-        "    -> re-run kindle-tablet\n"
-        "\n"
-        "  If it's already listed, remove and re-add it.\n",
-        file=sys.stderr,
+        "If it's already listed, remove and re-add it."
     )
-    sys.exit(1)
+    # Raise instead of sys.exit(1) so the GUI's except-Exception handler
+    # catches this and shows an error dialog.  sys.exit() raises SystemExit
+    # (a BaseException), which silently kills daemon threads with no feedback.
+    raise RuntimeError(msg)
 
 
 # -- MacOSInput ----------------------------------------------------------------
@@ -278,12 +279,19 @@ class MacOSInput:
         return _CGPoint(x, y)
 
     def _post(self, ev: ctypes.c_void_p) -> None:
+        if not ev:
+            log.warning("_post: NULL event, skipping")
+            return
         _cg.CGEventPost(_kCGHIDEventTap, ev)
         _cg.CFRelease(ev)
 
     def _mouse_event(self, ev_type: int, x: float, y: float,
                      button: int = _kCGMouseButtonLeft) -> ctypes.c_void_p:
-        return _cg.CGEventCreateMouseEvent(self._src, ev_type, self._pt(x, y), button)
+        ev = _cg.CGEventCreateMouseEvent(self._src, ev_type, self._pt(x, y), button)
+        if not ev:
+            log.warning("CGEventCreateMouseEvent returned NULL (type=%d, x=%.1f, y=%.1f)",
+                        ev_type, x, y)
+        return ev
 
     def _set_deltas(self, ev, dx: float, dy: float) -> None:
         """Set mouse delta fields explicitly.
@@ -375,6 +383,8 @@ class MacOSInput:
             self._fill_proximity_fields(ev, enter, eraser, device_id_override)
             _cg.CGEventPost(_kCGHIDEventTap, ev)
             _cg.CFRelease(ev)
+        else:
+            log.warning("CGEventCreate returned NULL for proximity event")
 
     def _ensure_proximity(self, x: float, y: float, eraser: bool) -> None:
         entering_fresh = not self._in_proximity

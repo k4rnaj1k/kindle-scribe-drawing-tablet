@@ -52,6 +52,13 @@ class KindleConnector:
         self._threads: list[threading.Thread] = []
         self.parser = EventParser(arch_bits=32)
         self._dispatch_queue: queue.Queue = queue.Queue()
+        # Raw digitizer caps as detected by update_config_from_device(), saved
+        # before any rotation event can swap tc.kindle_max_x/y in-place.
+        # main.py reads these to initialise handler._original_max_x/y so that
+        # a landscape rotation firing before the main thread gets there cannot
+        # corrupt those baseline values.
+        self.raw_pen_max_x: int = 0
+        self.raw_pen_max_y: int = 0
         # Monitor channels kept so stop() can close them and unblock recv()
         self._rotation_channel = None
         self._shortcut_channel = None
@@ -161,8 +168,10 @@ class KindleConnector:
             tc = self.config.tablet
             if "x" in caps:
                 tc.kindle_max_x = caps["x"][1]
+                self.raw_pen_max_x = caps["x"][1]   # save before rotation can swap
             if "y" in caps:
                 tc.kindle_max_y = caps["y"][1]
+                self.raw_pen_max_y = caps["y"][1]   # save before rotation can swap
             if "pressure" in caps:
                 tc.kindle_max_pressure = caps["pressure"][1]
             log.info("Updated config from device caps: max_x=%d, max_y=%d, max_pressure=%d",
@@ -482,20 +491,36 @@ class KindleConnector:
             channel.close()
 
     def _start_tcp_streaming(self) -> None:
-        """Connect to the tablet-daemon running on the Kindle via TCP."""
+        """Connect to tablet-ui's built-in TCP event server on the Kindle."""
         stream_port = self.config.kindle.stream_port
-        pen_device = self.config.pen_device
+        pen_device  = self.config.pen_device
 
-        # Start the daemon only if it is not already running (e.g. launched by
-        # tablet-mode.sh).  Always log to /tmp/tablet-daemon.log so errors are
-        # visible on the Kindle.
-        log.info("Ensuring tablet-daemon is running on Kindle (port %d)...", stream_port)
+        # tablet-ui auto-detects the pen evdev node via readdir(), whose order
+        # differs from the host's lexicographic shell glob in
+        # auto_detect_pen_device().  On a Scribe with multiple matching nodes
+        # (e.g. an ntx_event sensor *and* the wacom_i2c digitizer) the two
+        # detections can disagree → the host reads caps from device A while
+        # tablet-ui streams events from device B.  Raw values from B get
+        # scaled by A's much larger max_x/max_y, collapsing every coordinate
+        # into the bottom-left corner of the screen.
+        #
+        # Fix: always pass --device explicitly so both sides agree.  If
+        # tablet-ui is already running without our --device argument (e.g.
+        # launched by tablet-mode.sh / KUAL), kill it and restart with the
+        # correct device.  If it's already running with our exact --device,
+        # leave it alone — no GTK flicker.
+        log.info("Ensuring tablet-ui is streaming from %s on port %d...",
+                 pen_device, stream_port)
         self._ssh.exec_command(
-            f"pgrep -f 'tablet-daemon' > /dev/null 2>&1 || "
-            f"nohup /mnt/us/extensions/kindle-tablet/bin/tablet-daemon "
-            f"{pen_device} {stream_port} >> /tmp/tablet-daemon.log 2>&1 &"
+            f"if ! pgrep -f 'tablet-ui.*--device {pen_device}' > /dev/null 2>&1; then "
+            f"  pkill -f 'tablet-ui' 2>/dev/null; "
+            f"  sleep 0.3; "
+            f"  nohup /mnt/us/extensions/kindle-tablet/bin/tablet-ui "
+            f"  --device {pen_device} "
+            f"  --port {stream_port} >> /tmp/tablet-ui.log 2>&1 & "
+            f"fi"
         )
-        time.sleep(1)  # Give the server a moment to start if it wasn't running
+        time.sleep(1)  # Give the server a moment to (re)start
 
         t = threading.Thread(target=self._tcp_read_loop, daemon=True, name="tcp-reader")
         t.start()
@@ -505,11 +530,11 @@ class KindleConnector:
         self._start_shortcut_monitor()
 
     def _tcp_read_loop(self) -> None:
-        """Read events from TCP socket."""
+        """Read events from tablet-ui's TCP event server."""
         host = self.config.kindle.host
         port = self.config.kindle.stream_port
 
-        log.info("Connecting to tablet-daemon at %s:%d...", host, port)
+        log.info("Connecting to tablet-ui TCP server at %s:%d...", host, port)
         retries = 5
         sock = None
         for attempt in range(retries):
@@ -520,7 +545,7 @@ class KindleConnector:
                 s.settimeout(None)
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock = s
-                log.info("Connected to tablet-daemon.")
+                log.info("Connected to tablet-ui TCP server.")
                 break
             except (ConnectionRefusedError, socket.timeout):
                 s.close()
@@ -529,7 +554,7 @@ class KindleConnector:
                 time.sleep(1)
 
         if sock is None:
-            log.error("Could not connect to tablet-daemon")
+            log.error("Could not connect to tablet-ui TCP server")
             return
 
         parser = self.parser
@@ -563,7 +588,9 @@ class KindleConnector:
 
                 events = parser.feed(data)
                 for ev in events:
-                    if ev == "pen":
+                    if isinstance(ev, tuple) and ev[0] == "control":
+                        self._dispatch_queue.put(("control", ev[1], ev[2]))
+                    elif ev == "pen":
                         self._dispatch_queue.put(("pen", copy.copy(parser.pen)))
         except Exception as e:
             if self._running:
@@ -598,10 +625,10 @@ class KindleConnector:
             except Exception:
                 pass
 
-        # If in TCP mode, also kill the streaming daemon
+        # If in TCP mode and we started tablet-ui ourselves, stop it
         if self.config.mode == "tcp" and self._ssh:
             try:
-                self._ssh.exec_command("pkill -f 'tablet-daemon' 2>/dev/null")
+                self._ssh.exec_command("pkill -f 'tablet-ui' 2>/dev/null")
             except Exception:
                 pass
 
